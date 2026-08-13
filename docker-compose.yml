@@ -30,7 +30,7 @@ services:
     expose: ["80"]
   caddy:
     image: caddy:2-alpine
-    ports: ["3030:80"]
+    ports: ["3080:80"]
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

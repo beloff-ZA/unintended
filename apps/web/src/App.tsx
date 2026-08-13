@@ -1,6 +1,6 @@
 import { useEffect,useRef,useState } from 'react';
 type Line={id:number,text:string,kind?:'system'|'input'};
-export function App(){const [player,setPlayer]=useState<any>(null);const [lines,setLines]=useState<Line[]>([]);const [input,setInput]=useState('');const ws=useRef<WebSocket|null>(null);const end=useRef<HTMLDivElement>(null);
+export function App(){const [player,setPlayer]=useState<any>(null);const [lines,setLines]=useState<Line[]>([]);const [input,setInput]=useState('');const ws=useRef<WebSocket|null>(null);const scrollRef=useRef<HTMLDivElement>(null);
  const append=(texts:string[],kind?:Line['kind'])=>setLines(v=>[...v,...texts.map((text,i)=>({id:Date.now()+i+Math.random(),text,kind}))].slice(-400));
  async function refresh(){const r=await fetch('/api/me',{credentials:'include'});if(r.ok)setPlayer((await r.json()).player);}
  async function devLogin(slot=1){const r=await fetch(`/api/dev/login/${slot}`,{method:'POST',credentials:'include'});if(r.ok){setPlayer((await r.json()).player);}}
