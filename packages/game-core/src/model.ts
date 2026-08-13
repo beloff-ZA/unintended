@@ -7,7 +7,7 @@ export type EventType =
 export interface GameEvent { id?: string; type: EventType; actorId: string; targetId?: string; locationId?: string; payload?: Record<string, unknown>; at: Date; }
 export interface CommandIntent { verb: string; args: string[]; raw: string; }
 export interface ActorView { id:string; name:string; locationId:string; knownConcepts:Set<string>; }
-export interface EntityView { id:string; name:string; kind:EntityKind; locationId?:string; portable?:boolean; openable?:boolean; open?:boolean; }
+export interface EntityView { id:string; name:string; kind:EntityKind; locationId?:string; portable?:boolean; openable?:boolean; open?:boolean; facts?:string[]; }
 export interface CommandResult { lines:string[]; events:GameEvent[]; discoveredConcept?:string; }
 
 export interface GameRepository {

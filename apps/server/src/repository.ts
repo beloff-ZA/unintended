@@ -1,7 +1,13 @@
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { ActorView, EntityView, GameEvent, GameRepository } from '@unintended/game-core';
+import { buildWorld, DEFAULT_WORLD_SEED } from '@unintended/world-data';
 import { db } from './db/index.js';
 import { anomalies, anomalyOwners, characters, entities, locations, npcState, playerConcepts, worldDoors, worldEvents, importantHistory } from './db/schema.js';
+
+const worldSeed = Number(process.env.WORLD_SEED ?? DEFAULT_WORLD_SEED);
+const world = buildWorld(worldSeed);
+const directionByKey = new Map(world.directions.map((direction) => [direction.key, direction]));
+const normalise = (value:string) => value.trim().toLowerCase().replace(/[?.!,]+$/g,'').replace(/\s+/g,' ');
 
 export class PostgresGameRepository implements GameRepository {
  async getActor(id:string):Promise<ActorView>{
@@ -13,16 +19,26 @@ export class PostgresGameRepository implements GameRepository {
  async listLocationEntities(locationId:string):Promise<EntityView[]>{
   const es=await db.select().from(entities).where(and(eq(entities.locationId,locationId),isNull(entities.ownerId)));
   const ns=await db.select().from(npcState).where(eq(npcState.locationId,locationId));
-  return [...es.map(e=>({id:e.id,name:e.name,kind:e.kind as EntityView['kind'],locationId:e.locationId??undefined,portable:e.portable,openable:e.openable,open:e.open})),...ns.map(n=>({id:n.id,name:n.name,kind:'NPC' as const,locationId:n.locationId}))];
+  return [
+   ...es.map(e=>({id:e.id,name:e.name,kind:e.kind as EntityView['kind'],locationId:e.locationId??undefined,portable:e.portable,openable:e.openable,open:e.open,facts:[`${e.name} is here.`,e.portable?'It looks movable.':'It does not look conveniently movable.',...(e.openable?[e.open?'It is open.':'It appears capable of opening.']:[])]})),
+   ...ns.map(n=>({id:n.id,name:n.name,kind:'NPC' as const,locationId:n.locationId,facts:[`${n.name} is here.`,n.job==='unknown'?`${n.name}'s occupation is not obvious.`:`${n.name} appears to work as a ${n.job}.`]}))
+  ];
  }
  async findVisibleEntity(locationId:string, query:string){
-  const q=query.trim().toLowerCase(); if(!q) return undefined; const es=await this.listLocationEntities(locationId);
-  return es.find(e=>e.name.toLowerCase()===q)||es.find(e=>e.name.toLowerCase().includes(q));
+  const q=normalise(query).replace(/^(the|a|an)\s+/,''); if(!q) return undefined; const es=await this.listLocationEntities(locationId);
+  return es.find(e=>normalise(e.name)===q)||es.find(e=>normalise(e.name).includes(q)||q.includes(normalise(e.name)));
  }
  async movePlayer(playerId:string,destination:string){
   const [c]=await db.select().from(characters).where(eq(characters.id,playerId)); if(!c) return null;
   const [l]=await db.select().from(locations).where(eq(locations.id,c.locationId)); if(!l) return null;
-  const destKey=destination.toLowerCase(); const targetId=l.exits[destKey] ?? Object.entries(l.exits).find(([,v])=>v.toLowerCase().includes(destKey))?.[1]; if(!targetId) return null;
+  const query=normalise(destination).replace(/^(the|a|an)\s+/,''); let targetId:string|undefined;
+  for(const [directionKey,candidateId] of Object.entries(l.exits)){
+   const direction=directionByKey.get(directionKey); const [target]=await db.select().from(locations).where(eq(locations.id,candidateId));
+   const matchesDirection=direction && (query===normalise(direction.label)||destination.trim()===direction.shape||query===normalise(direction.key));
+   const matchesDestination=target && (normalise(target.name)===query||normalise(target.name).includes(query));
+   if(matchesDirection||matchesDestination){targetId=candidateId;break;}
+  }
+  if(!targetId) return null;
   const [to]=await db.select().from(locations).where(eq(locations.id,targetId)); if(!to) return null;
   await db.update(characters).set({locationId:to.id}).where(eq(characters.id,playerId)); return {from:c.locationId,to:to.id,toName:to.name};
  }
@@ -33,7 +49,7 @@ export class PostgresGameRepository implements GameRepository {
  }
  async dropItem(playerId:string,itemIdOrName:string){
   const [c]=await db.select().from(characters).where(eq(characters.id,playerId)); if(!c) return false;
-  const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId)); const q=itemIdOrName.toLowerCase(); const item=owned.find(x=>x.id===itemIdOrName||x.name.toLowerCase().includes(q)); if(!item) return false;
+  const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId)); const q=normalise(itemIdOrName); const item=owned.find(x=>x.id===itemIdOrName||normalise(x.name).includes(q)); if(!item) return false;
   await db.update(entities).set({ownerId:null,locationId:c.locationId}).where(eq(entities.id,item.id)); return true;
  }
  async openEntity(_playerId:string,entityId:string){const [u]=await db.update(entities).set({open:true}).where(and(eq(entities.id,entityId),eq(entities.openable,true),eq(entities.open,false))).returning({id:entities.id}); return !!u;}

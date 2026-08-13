@@ -1,11 +1,38 @@
-import type { FastifyInstance } from 'fastify'; import argon2 from 'argon2'; import { eq } from 'drizzle-orm';
-import { db } from '../db/index.js'; import { characters, users, playerConcepts, entities, serverEventUsage, worldEvents, worldFlags } from '../db/schema.js'; import { createSession, destroySession, getSession, redis } from '../auth/session.js'; import { incidentAlias } from '@unintended/game-core';
+import type { FastifyInstance } from 'fastify';
+import argon2 from 'argon2';
+import { eq } from 'drizzle-orm';
+import { buildWorld, DEFAULT_WORLD_SEED } from '@unintended/world-data';
+import { db } from '../db/index.js';
+import { characters, users, playerConcepts, entities, serverEventUsage, worldEvents, worldFlags } from '../db/schema.js';
+import { createSession, destroySession, getSession, redis } from '../auth/session.js';
+import { incidentAlias } from '@unintended/game-core';
+
+const world=buildWorld(Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED));
+const worldLocationById=new Map(world.locations.map(location=>[location.id,location]));
+const directionByKey=new Map(world.directions.map(direction=>[direction.key,direction]));
+
 export async function apiRoutes(app:FastifyInstance){
  app.get('/api/health',async()=>({ok:true,service:'unintended'}));
  app.post('/api/auth/register',async(req,reply)=>{const {email,password,name}=req.body as any;if(!email||!password||!name)return reply.code(400).send({error:'Missing fields'});const passwordHash=await argon2.hash(password);const [u]=await db.insert(users).values({email:String(email).toLowerCase(),passwordHash}).returning();const [c]=await db.insert(characters).values({userId:u.id,name}).returning();const token=await createSession(c.id);reply.setCookie('session',token,{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',path:'/'});return {player:{id:c.id,name:c.name}};});
  app.post('/api/auth/login',async(req,reply)=>{const {email,password}=req.body as any;const [u]=await db.select().from(users).where(eq(users.email,String(email).toLowerCase()));if(!u?.passwordHash||!await argon2.verify(u.passwordHash,password))return reply.code(401).send({error:'Invalid credentials'});const [c]=await db.select().from(characters).where(eq(characters.userId,u.id));const token=await createSession(c.id);reply.setCookie('session',token,{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',path:'/'});return {player:{id:c.id,name:c.name}};});
  app.post('/api/auth/logout',async(req,reply)=>{await destroySession(req.cookies.session);reply.clearCookie('session',{path:'/'});return {ok:true};});
- app.get('/api/me',async(req,reply)=>{const id=await getSession(req.cookies.session);if(!id)return reply.code(401).send({error:'Unauthenticated'});const [c]=await db.select().from(characters).where(eq(characters.id,id));const concepts=await db.select().from(playerConcepts).where(eq(playerConcepts.playerId,id));const inventory=await db.select().from(entities).where(eq(entities.ownerId,id));return {player:c,knownConcepts:concepts.map(x=>x.concept),inventory:inventory.map(x=>({id:x.id,name:x.name}))};});
+ app.get('/api/me',async(req,reply)=>{
+  const id=await getSession(req.cookies.session);if(!id)return reply.code(401).send({error:'Unauthenticated'});
+  const [c]=await db.select().from(characters).where(eq(characters.id,id));if(!c)return reply.code(404).send({error:'Player missing'});
+  const concepts=await db.select().from(playerConcepts).where(eq(playerConcepts.playerId,id));
+  const inventory=await db.select().from(entities).where(eq(entities.ownerId,id));
+  const history=await db.select({type:worldEvents.type,locationId:worldEvents.locationId}).from(worldEvents).where(eq(worldEvents.actorId,id));
+  const visited=new Set<string>([c.locationId]);
+  for(const event of history){if((event.type==='PLAYER_LOOKED'||event.type==='PLAYER_MOVED')&&event.locationId)visited.add(event.locationId);}
+  const visibleIds=new Set<string>(visited);
+  for(const locationId of visited){const location=worldLocationById.get(locationId);if(location)for(const targetId of Object.values(location.exits))visibleIds.add(targetId);}
+  const nodes=[...visibleIds].map(locationId=>worldLocationById.get(locationId)).filter((location):location is NonNullable<typeof location>=>!!location).map(location=>({id:location.id,name:visited.has(location.id)?location.name:null,x:location.x,y:location.y,status:visited.has(location.id)?'visited':'inferred',current:location.id===c.locationId}));
+  const edges=[] as Array<{from:string;to:string;directionKey:string;shape:string;label:string;status:'known'|'inferred'}>;
+  for(const sourceId of visited){const source=worldLocationById.get(sourceId);if(!source)continue;for(const [directionKey,targetId] of Object.entries(source.exits)){const direction=directionByKey.get(directionKey);if(!direction)continue;edges.push({from:sourceId,to:targetId,directionKey,shape:direction.shape,label:direction.label,status:visited.has(targetId)?'known':'inferred'});}}
+  const seenDirectionKeys=new Set(edges.map(edge=>edge.directionKey));
+  const directions=world.directions.filter(direction=>seenDirectionKeys.has(direction.key));
+  return {player:c,knownConcepts:concepts.map(x=>x.concept),inventory:inventory.map(x=>({id:x.id,name:x.name})),memory:{directionCount:world.directions.length,nodes,edges,directions}};
+ });
  const toys=new Set(['weather','time','wind','moon','sun','lights','birds','doors','bell']);
  app.post('/api/server-toys/:command',async(req,reply)=>{
   const playerId=await getSession(req.cookies.session); if(!playerId)return reply.code(401).send({error:'Unauthenticated'});
