@@ -1,1 +1,1 @@
-{"name":"@unintended/world-data","version":"0.1.0","type":"module","main":"src/index.ts","scripts":{"typecheck":"tsc --noEmit","build":"tsc -p tsconfig.json"},"devDependencies":{"typescript":"^5.9.2"}}
+{"name":"@unintended/world-data","version":"0.1.0","type":"module","main":"dist/index.ts","scripts":{"typecheck":"tsc --noEmit","build":"tsc -p tsconfig.json"},"devDependencies":{"typescript":"^5.9.2"}}
