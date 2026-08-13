@@ -5,7 +5,6 @@ services:
       POSTGRES_DB: unintended
       POSTGRES_USER: unintended
       POSTGRES_PASSWORD: unintended
-    ports: ["5432:5432"]
     volumes: ["postgres_data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U unintended"]
@@ -14,7 +13,6 @@ services:
       retries: 20
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
     volumes: ["redis_data:/data"]
   server:
     build:
@@ -32,7 +30,7 @@ services:
     expose: ["80"]
   caddy:
     image: caddy:2-alpine
-    ports: ["80:80", "443:443"]
+    ports: ["3030:80"]
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
