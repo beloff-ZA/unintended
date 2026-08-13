@@ -1,0 +1,2 @@
+import Fastify from 'fastify'; import cookie from '@fastify/cookie'; import cors from '@fastify/cors'; import { apiRoutes } from './api/routes.js'; import { attachWebSocket } from './websocket/socket.js';
+const app=Fastify({logger:{level:process.env.NODE_ENV==='development'?'debug':'info'}}); await app.register(cookie); await app.register(cors,{origin:process.env.WEB_ORIGIN??'http://localhost:5173',credentials:true}); await app.register(apiRoutes); attachWebSocket(app); const port=Number(process.env.PORT??3000); await app.listen({port,host:'0.0.0.0'});
