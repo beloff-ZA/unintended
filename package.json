@@ -1,0 +1,17 @@
+{
+  "name": "unintended",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @unintended/server db:generate",
+    "db:migrate": "pnpm --filter @unintended/server db:migrate",
+    "world:seed": "pnpm --filter @unintended/server world:seed",
+    "world:reset": "pnpm --filter @unintended/server world:reset"
+  },
+  "devDependencies": {"typescript":"^5.9.2"}
+}

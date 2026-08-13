@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: unintended
+      POSTGRES_USER: unintended
+      POSTGRES_PASSWORD: unintended
+    ports: ["5432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unintended"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["redis_data:/data"]
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+    expose: ["3000"]
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    expose: ["80"]
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [web, server]
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:

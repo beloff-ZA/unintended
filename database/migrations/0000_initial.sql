@@ -1,0 +1,17 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email text NOT NULL UNIQUE, password_hash text, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS characters (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid REFERENCES users(id), name text NOT NULL, location_id text NOT NULL DEFAULT 'bellweather-square', created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS player_concepts (player_id uuid NOT NULL REFERENCES characters(id), concept text NOT NULL, discovered_at timestamptz NOT NULL DEFAULT now()); CREATE UNIQUE INDEX IF NOT EXISTS player_concept_unique ON player_concepts(player_id,concept);
+CREATE TABLE IF NOT EXISTS locations (id text PRIMARY KEY,name text NOT NULL,exits jsonb NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS entities (id text PRIMARY KEY,name text NOT NULL,kind text NOT NULL,location_id text,owner_id uuid REFERENCES characters(id),portable boolean NOT NULL DEFAULT false,openable boolean NOT NULL DEFAULT false,open boolean NOT NULL DEFAULT false,data jsonb NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS npc_state (id text PRIMARY KEY,name text NOT NULL,location_id text NOT NULL,job text NOT NULL,memory jsonb NOT NULL DEFAULT '[]',data jsonb NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS anomalies (id text PRIMARY KEY,name text,domain text NOT NULL,door_key text,pattern jsonb NOT NULL,discovered_by uuid REFERENCES characters(id),discovered_at timestamptz);
+CREATE TABLE IF NOT EXISTS anomaly_owners (anomaly_id text NOT NULL REFERENCES anomalies(id),player_id uuid NOT NULL REFERENCES characters(id),granted_at timestamptz NOT NULL DEFAULT now()); CREATE UNIQUE INDEX IF NOT EXISTS anomaly_owner_unique ON anomaly_owners(anomaly_id);
+CREATE TABLE IF NOT EXISTS anomaly_observations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),anomaly_id text NOT NULL,player_id uuid NOT NULL,classification text NOT NULL DEFAULT 'UNKNOWN EXCEPTION',count integer NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS world_doors (key text PRIMARY KEY,name text NOT NULL,open boolean NOT NULL DEFAULT false,opened_at timestamptz,opened_by_anomaly text);
+CREATE TABLE IF NOT EXISTS world_events (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),type text NOT NULL,actor_id text NOT NULL,target_id text,location_id text,payload jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS important_history (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),type text NOT NULL,summary text NOT NULL,payload jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS world_flags (key text PRIMARY KEY,value jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS server_event_usage (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),event text NOT NULL,incident_alias text NOT NULL,actor_id uuid REFERENCES characters(id),created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY,name text NOT NULL,requirements jsonb NOT NULL,progress jsonb NOT NULL DEFAULT '{}',complete boolean NOT NULL DEFAULT false);
+CREATE INDEX IF NOT EXISTS world_events_created_idx ON world_events(created_at DESC); CREATE INDEX IF NOT EXISTS entities_location_idx ON entities(location_id); CREATE INDEX IF NOT EXISTS entities_owner_idx ON entities(owner_id);
