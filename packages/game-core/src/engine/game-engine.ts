@@ -22,7 +22,7 @@ function inquiryResponse(subject:EntityView|undefined,subjectText:string,specifi
   if(repetition>=3)return [pick(lines),'Repeating the same question is now producing mainly statistics. Change the question or the evidence.'];
   return [pick(lines)];
  }
- const facts=subject.facts?.length?subject.facts:[`${subject.name} is here.`];const base=Math.min(.78,.16+specificity*.48+(subject.locationId?.12:0));const usefulChance=Math.max(.06,base*penalty);const roll=Math.random();
+ const facts=subject.facts?.length?subject.facts:[`${subject.name} is here.`];const base=Math.min(.78,.16+specificity*.48+(subject.locationId?.length?0.12:0));const usefulChance=Math.max(.06,base*penalty);const roll=Math.random();
  if(roll<usefulChance){const first=pick(facts);if(facts.length>1&&Math.random()<specificity*.42*penalty){const second=pick(facts.filter(f=>f!==first));return [first,second];}return [first];}
  if(roll<usefulChance+.24*penalty){const fact=pick(facts);return [pick([`Reluctantly: ${fact}`,`A useful statement has escaped containment: ${fact}`,`The Server dislikes rewarding this, but: ${fact}`,`Administrative generosity has occurred: ${fact}`])];}
  const attitudes=[`${subject.name} continues to exist despite the investigation.`,`The Server has considered your ${questionKind.toLowerCase()} question and retained most of the useful answer internally.`,`That question was structurally sound. The answer remains less cooperative.`,`You are asking better questions than the world is currently answering.`,`The Server is not withholding everything. It is merely withholding the part you wanted.`];
