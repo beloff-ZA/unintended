@@ -1,5 +1,5 @@
 import { and, desc, eq, isNull } from 'drizzle-orm';
-import type { ActorView, EntityView, GameEvent, GameRepository } from '@unintended/game-core';
+import type { ActorView, EntityView, GameEvent, GameRepository, LocationExitView } from '@unintended/game-core';
 import { buildWorld, DEFAULT_WORLD_SEED, detectAnomalyCandidates } from '@unintended/world-data';
 import { db } from './db/index.js';
 import { anomalyClaimsV2, anomalyOwners, characters, entities, locations, npcState, playerConcepts, worldEvents, importantHistory } from './db/schema.js';
@@ -24,6 +24,16 @@ export class PostgresGameRepository implements GameRepository {
    ...es.map(e=>({id:e.id,name:e.name,kind:e.kind as EntityView['kind'],locationId:e.locationId??undefined,portable:e.portable,openable:e.openable,open:e.open,facts:[`${e.name} is here.`,e.portable?'It looks movable.':'It does not look conveniently movable.',...(e.openable?[e.open?'It is open.':'It appears capable of opening.']:[])]})),
    ...ns.map(n=>({id:n.id,name:n.name,kind:'NPC' as const,locationId:n.locationId,facts:[`${n.name} is here.`,n.job==='unknown'?`${n.name}'s occupation is not obvious.`:`${n.name} appears to work as a ${n.job}.`]}))
   ];
+ }
+ async listLocationExits(locationId:string):Promise<LocationExitView[]>{
+  const [location]=await db.select().from(locations).where(eq(locations.id,locationId));if(!location)return [];
+  const result:LocationExitView[]=[];
+  for(const [directionKey,destinationId] of Object.entries(location.exits)){
+   const direction=directionByKey.get(directionKey);if(!direction)continue;
+   const [destination]=await db.select().from(locations).where(eq(locations.id,destinationId));
+   result.push({directionKey,shape:direction.shape,label:direction.label,destinationId,destinationName:destination?.name});
+  }
+  return result;
  }
  async findVisibleEntity(locationId:string, query:string){
   const q=normalise(query).replace(/^(the|a|an)\s+/,''); if(!q) return undefined; const es=await this.listLocationEntities(locationId);
