@@ -1,8 +1,9 @@
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { ActorView, EntityView, GameEvent, GameRepository } from '@unintended/game-core';
-import { buildWorld, DEFAULT_WORLD_SEED } from '@unintended/world-data';
+import { buildWorld, DEFAULT_WORLD_SEED, detectAnomalyCandidates } from '@unintended/world-data';
 import { db } from './db/index.js';
-import { anomalies, anomalyOwners, characters, entities, locations, npcState, playerConcepts, worldDoors, worldEvents, importantHistory } from './db/schema.js';
+import { anomalyClaimsV2, anomalyOwners, characters, entities, locations, npcState, playerConcepts, worldEvents, importantHistory } from './db/schema.js';
+import { getPlayerProgress, recordActionUnderstanding, registerQuestion, registerSemanticProbe } from './progression.js';
 
 const worldSeed = Number(process.env.WORLD_SEED ?? DEFAULT_WORLD_SEED);
 const world = buildWorld(worldSeed);
@@ -31,45 +32,51 @@ export class PostgresGameRepository implements GameRepository {
  async movePlayer(playerId:string,destination:string){
   const [c]=await db.select().from(characters).where(eq(characters.id,playerId)); if(!c) return null;
   const [l]=await db.select().from(locations).where(eq(locations.id,c.locationId)); if(!l) return null;
-  const query=normalise(destination).replace(/^(the|a|an)\s+/,''); let targetId:string|undefined;
+  const query=normalise(destination).replace(/^(the|a|an)\s+/,''); let targetId:string|undefined; let matchedDirection:string|undefined;
   for(const [directionKey,candidateId] of Object.entries(l.exits)){
    const direction=directionByKey.get(directionKey); const [target]=await db.select().from(locations).where(eq(locations.id,candidateId));
    const matchesDirection=direction && (query===normalise(direction.label)||destination.trim()===direction.shape||query===normalise(direction.key));
    const matchesDestination=target && (normalise(target.name)===query||normalise(target.name).includes(query));
-   if(matchesDirection||matchesDestination){targetId=candidateId;break;}
+   if(matchesDirection||matchesDestination){targetId=candidateId;matchedDirection=directionKey;break;}
   }
   if(!targetId) return null;
   const [to]=await db.select().from(locations).where(eq(locations.id,targetId)); if(!to) return null;
-  await db.update(characters).set({locationId:to.id}).where(eq(characters.id,playerId)); return {from:c.locationId,to:to.id,toName:to.name};
+  await db.update(characters).set({locationId:to.id}).where(eq(characters.id,playerId)); return {from:c.locationId,to:to.id,toName:to.name,directionKey:matchedDirection};
  }
  async takeItem(playerId:string,itemId:string){
-  const ownedException=await db.select().from(anomalyOwners).where(and(eq(anomalyOwners.playerId,playerId),eq(anomalyOwners.anomalyId,'ownership-after-open')));
-  const condition=ownedException.length ? and(eq(entities.id,itemId),isNull(entities.ownerId)) : and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));
+  const legacy=await db.select().from(anomalyOwners).where(and(eq(anomalyOwners.playerId,playerId),eq(anomalyOwners.anomalyId,'ownership-after-open')));
+  const claims=await db.select({exception:anomalyClaimsV2.exception}).from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));
+  const canCarryAwkward=legacy.length>0||claims.some(row=>(row.exception as any)?.primitive==='CARRY_AWKWARD');
+  const condition=canCarryAwkward?and(eq(entities.id,itemId),isNull(entities.ownerId)):and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));
   const [updated]=await db.update(entities).set({ownerId:playerId,locationId:null}).where(condition).returning({id:entities.id}); return !!updated;
  }
  async dropItem(playerId:string,itemIdOrName:string){
-  const [c]=await db.select().from(characters).where(eq(characters.id,playerId)); if(!c) return false;
-  const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId)); const q=normalise(itemIdOrName); const item=owned.find(x=>x.id===itemIdOrName||normalise(x.name).includes(q)); if(!item) return false;
-  await db.update(entities).set({ownerId:null,locationId:c.locationId}).where(eq(entities.id,item.id)); return true;
+  const [c]=await db.select().from(characters).where(eq(characters.id,playerId)); if(!c) return null;
+  const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId)); const q=normalise(itemIdOrName); const item=owned.find(x=>x.id===itemIdOrName||normalise(x.name).includes(q)); if(!item) return null;
+  await db.update(entities).set({ownerId:null,locationId:c.locationId}).where(eq(entities.id,item.id)); return {id:item.id,name:item.name};
  }
  async openEntity(_playerId:string,entityId:string){const [u]=await db.update(entities).set({open:true}).where(and(eq(entities.id,entityId),eq(entities.openable,true),eq(entities.open,false))).returning({id:entities.id}); return !!u;}
  async discoverConcept(playerId:string,concept:string){
   const inserted=await db.insert(playerConcepts).values({playerId,concept}).onConflictDoNothing().returning({concept:playerConcepts.concept}); return inserted.length===1;
  }
+ async registerSemanticProbe(playerId:string,concept:string,surface:string){const row=await registerSemanticProbe(playerId,concept,surface);return {distinct:row.distinct,hintLevel:row.hintLevel};}
+ async registerInquiry(playerId:string,signature:string){return registerQuestion(playerId,signature);}
+ async recordUnderstanding(playerId:string,actionId:string,contextKey:string,success:boolean,extras?:{anomaly?:boolean;thresholdGrade?:'BARE'|'COMPETENT'|'MASTERY'}){
+  const update=await recordActionUnderstanding(playerId,actionId,contextKey,success,extras);return {currentTitle:update.currentTitle,hiddenTier:update.hiddenTier,titleChanged:update.titleChanged,tierChanged:update.tierChanged};
+ }
  async recordEvents(events:GameEvent[]){ if(!events.length) return; await db.insert(worldEvents).values(events.map(e=>({type:e.type,actorId:e.actorId,targetId:e.targetId,locationId:e.locationId,payload:e.payload??{},createdAt:e.at}))); }
  async tryDesignedAnomalies(events:GameEvent[],playerId:string){
-  if(!events.length) return {};
-  const history=await db.select({type:worldEvents.type}).from(worldEvents).where(eq(worldEvents.actorId,playerId)).orderBy(desc(worldEvents.createdAt)).limit(8);
-  const recent=[...history.reverse().map(e=>e.type),...events.map(e=>e.type)];
-  const candidates=await db.select().from(anomalies).where(isNull(anomalies.discoveredBy));
-  const hit=candidates.find(a=>{const pattern=a.pattern as string[]; if(pattern.length>recent.length)return false; const tail=recent.slice(-pattern.length); return pattern.every((p,i)=>tail[i]===p);}); if(!hit) return {};
-  return await db.transaction(async tx=>{
-   const [claimed]=await tx.update(anomalies).set({discoveredBy:playerId,discoveredAt:new Date()}).where(and(eq(anomalies.id,hit.id),isNull(anomalies.discoveredBy))).returning();
-   if(!claimed) return {};
-   await tx.insert(anomalyOwners).values({anomalyId:claimed.id,playerId});
-   if(claimed.doorKey){ await tx.update(worldDoors).set({open:true,openedAt:new Date(),openedByAnomaly:claimed.id}).where(eq(worldDoors.key,claimed.doorKey)); }
-   await tx.insert(importantHistory).values({type:'ANOMALY_DISCOVERED',summary:`An anomaly in ${claimed.domain} was claimed.`,payload:{anomalyId:claimed.id,playerId}});
-   return {claimed:{id:claimed.id,name:claimed.name??undefined,doorKey:claimed.doorKey??undefined}};
-  });
+  if(!events.length)return {};
+  const history=await db.select({type:worldEvents.type,targetId:worldEvents.targetId,locationId:worldEvents.locationId,payload:worldEvents.payload}).from(worldEvents).where(eq(worldEvents.actorId,playerId)).orderBy(desc(worldEvents.createdAt)).limit(6);
+  const recent=[...history.reverse().map(row=>({type:row.type,targetId:row.targetId??undefined,locationId:row.locationId??undefined,payload:(row.payload??{}) as Record<string,unknown>})),...events.map(event=>({type:event.type,targetId:event.targetId,locationId:event.locationId,payload:event.payload}))];
+  const progress=await getPlayerProgress(playerId);const candidates=detectAnomalyCandidates(worldSeed,recent,progress.hiddenTier).filter(candidate=>candidate.variant%4===0);
+  for(const candidate of candidates){
+   const exception={primitive:candidate.template.exception,domain:candidate.template.domain,antiAbuse:candidate.template.antiAbuse,apparentUtility:candidate.template.apparentUtility};
+   const [claimed]=await db.insert(anomalyClaimsV2).values({instanceId:candidate.instanceId,templateId:candidate.template.id,variant:candidate.variant,worldSeed:String(worldSeed),playerId,exception,utility:candidate.template.utility}).onConflictDoNothing().returning({instanceId:anomalyClaimsV2.instanceId});
+   if(!claimed)continue;
+   await db.insert(importantHistory).values({type:'ANOMALY_DISCOVERED',summary:`A ${candidate.template.domain.toLowerCase()} contradiction was retained.`,payload:{instanceId:candidate.instanceId,templateId:candidate.template.id,playerId,exception:candidate.template.exception}});
+   return {claimed:{id:candidate.instanceId,name:candidate.template.name},retained:[candidate.template.exception]};
+  }
+  return {};
  }
 }
