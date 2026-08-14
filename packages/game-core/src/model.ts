@@ -11,6 +11,7 @@ export interface ActorView { id:string; name:string; locationId:string; knownCon
 export interface EntityView { id:string; name:string; kind:EntityKind; locationId?:string; portable?:boolean; openable?:boolean; open?:boolean; facts?:string[]; }
 export interface MoveResult { from:string; to:string; toName:string; directionKey?:string; }
 export interface DropResult { id:string; name:string; }
+export interface UnderstandingUpdate { currentTitle:string; hiddenTier:number; titleChanged:boolean; tierChanged:boolean; }
 export interface CommandResult { lines:string[]; events:GameEvent[]; discoveredConcept?:string; semantic?:{kind:string;verb:string;category?:string;confidence?:number}; }
 
 export interface GameRepository {
@@ -23,8 +24,9 @@ export interface GameRepository {
   dropItem(playerId:string,itemId:string): Promise<DropResult|null>;
   openEntity(playerId:string,entityId:string): Promise<boolean>;
   discoverConcept(playerId:string,concept:string): Promise<boolean>;
-  getSemanticProbeSurfaces(playerId:string,concept:string): Promise<Set<string>>;
-  getInquiryAttemptCount(playerId:string,signature:string): Promise<number>;
+  registerSemanticProbe(playerId:string,concept:string,surface:string): Promise<{distinct:number;hintLevel:number}>;
+  registerInquiry(playerId:string,signature:string): Promise<number>;
+  recordUnderstanding(playerId:string,actionId:string,contextKey:string,success:boolean,extras?:{anomaly?:boolean;thresholdGrade?:'BARE'|'COMPETENT'|'MASTERY'}): Promise<UnderstandingUpdate>;
   recordEvents(events:GameEvent[]): Promise<void>;
   tryDesignedAnomalies(events:GameEvent[], playerId:string): Promise<{claimed?:{id:string;name?:string;doorKey?:string}; retained?:string[]}>;
 }
