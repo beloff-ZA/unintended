@@ -9,6 +9,7 @@ export interface GameEvent { id?: string; type: EventType; actorId: string; targ
 export interface CommandIntent { verb: string; args: string[]; raw: string; }
 export interface ActorView { id:string; name:string; locationId:string; knownConcepts:Set<string>; }
 export interface EntityView { id:string; name:string; kind:EntityKind; locationId?:string; portable?:boolean; openable?:boolean; open?:boolean; facts?:string[]; }
+export interface LocationExitView { directionKey:string;shape:string;label:string;destinationId:string;destinationName?:string; }
 export interface MoveResult { from:string; to:string; toName:string; directionKey?:string; }
 export interface DropResult { id:string; name:string; }
 export interface UnderstandingUpdate { currentTitle:string; hiddenTier:number; titleChanged:boolean; tierChanged:boolean; }
@@ -18,6 +19,7 @@ export interface GameRepository {
   getActor(id:string): Promise<ActorView>;
   getLocationName(id:string): Promise<string>;
   listLocationEntities(locationId:string): Promise<EntityView[]>;
+  listLocationExits(locationId:string): Promise<LocationExitView[]>;
   findVisibleEntity(locationId:string, query:string): Promise<EntityView|undefined>;
   movePlayer(playerId:string, destination:string): Promise<MoveResult|null>;
   takeItem(playerId:string,itemId:string): Promise<boolean>;
