@@ -2,24 +2,29 @@ export type EntityKind = 'PLAYER'|'NPC'|'ITEM'|'LOCATION';
 export type Domain = 'MATTER'|'SPACE'|'TIME'|'MONEY'|'LIFE'|'DEATH'|'IDENTITY'|'KNOWLEDGE'|'OWNERSHIP'|'CAUSALITY'|'SOCIAL'|'ENTROPY';
 export type EventType =
   'PLAYER_LOOKED'|'PLAYER_MOVED'|'ITEM_TAKEN'|'ITEM_DROPPED'|'ITEM_TRANSFERRED'|'DOOR_OPENED'|
-  'PLAYER_DISCOVERED_CONCEPT'|'PLAYER_DISCOVERED_ANOMALY'|'WORLD_DOOR_OPENED'|'SERVER_EVENT_TRIGGERED'|'PROJECT_ADVANCED';
+  'PLAYER_PROBED_CONCEPT'|'PLAYER_ASKED_QUESTION'|'PLAYER_DISCOVERED_CONCEPT'|'PLAYER_DISCOVERED_ANOMALY'|
+  'WORLD_DOOR_OPENED'|'SERVER_EVENT_TRIGGERED'|'PROJECT_ADVANCED'|'THRESHOLD_PASSED'|'TITLE_CHANGED';
 
 export interface GameEvent { id?: string; type: EventType; actorId: string; targetId?: string; locationId?: string; payload?: Record<string, unknown>; at: Date; }
 export interface CommandIntent { verb: string; args: string[]; raw: string; }
 export interface ActorView { id:string; name:string; locationId:string; knownConcepts:Set<string>; }
 export interface EntityView { id:string; name:string; kind:EntityKind; locationId?:string; portable?:boolean; openable?:boolean; open?:boolean; facts?:string[]; }
-export interface CommandResult { lines:string[]; events:GameEvent[]; discoveredConcept?:string; }
+export interface MoveResult { from:string; to:string; toName:string; directionKey?:string; }
+export interface DropResult { id:string; name:string; }
+export interface CommandResult { lines:string[]; events:GameEvent[]; discoveredConcept?:string; semantic?:{kind:string;verb:string;category?:string;confidence?:number}; }
 
 export interface GameRepository {
   getActor(id:string): Promise<ActorView>;
   getLocationName(id:string): Promise<string>;
   listLocationEntities(locationId:string): Promise<EntityView[]>;
   findVisibleEntity(locationId:string, query:string): Promise<EntityView|undefined>;
-  movePlayer(playerId:string, destination:string): Promise<{from:string;to:string;toName:string}|null>;
+  movePlayer(playerId:string, destination:string): Promise<MoveResult|null>;
   takeItem(playerId:string,itemId:string): Promise<boolean>;
-  dropItem(playerId:string,itemId:string): Promise<boolean>;
+  dropItem(playerId:string,itemId:string): Promise<DropResult|null>;
   openEntity(playerId:string,entityId:string): Promise<boolean>;
   discoverConcept(playerId:string,concept:string): Promise<boolean>;
+  getSemanticProbeSurfaces(playerId:string,concept:string): Promise<Set<string>>;
+  getInquiryAttemptCount(playerId:string,signature:string): Promise<number>;
   recordEvents(events:GameEvent[]): Promise<void>;
   tryDesignedAnomalies(events:GameEvent[], playerId:string): Promise<{claimed?:{id:string;name?:string;doorKey?:string}; retained?:string[]}>;
 }
