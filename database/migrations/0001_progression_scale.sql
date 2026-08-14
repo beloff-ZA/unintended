@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS region_progress (
 CREATE INDEX IF NOT EXISTS region_progress_region_idx ON region_progress(region_id, grade);
 
 CREATE TABLE IF NOT EXISTS ai_interactions (
-  id bigserial PRIMARY KEY,
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   player_id uuid REFERENCES characters(id) ON DELETE SET NULL,
   input_hash text NOT NULL,
   kind text NOT NULL,
