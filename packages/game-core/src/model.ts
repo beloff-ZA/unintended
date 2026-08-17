@@ -3,6 +3,7 @@ export type Domain = 'MATTER'|'SPACE'|'TIME'|'MONEY'|'LIFE'|'DEATH'|'IDENTITY'|'
 export type EventType =
   'PLAYER_LOOKED'|'PLAYER_MOVED'|'ITEM_TAKEN'|'ITEM_DROPPED'|'ITEM_TRANSFERRED'|'DOOR_OPENED'|
   'PLAYER_PROBED_CONCEPT'|'PLAYER_ASKED_QUESTION'|'PLAYER_DISCOVERED_CONCEPT'|'PLAYER_DISCOVERED_ANOMALY'|
+  'PLAYER_ORIGIN_ASSIGNED'|'RELATIONSHIP_MAINTAINED'|'MAP_LINKED'|
   'WORLD_DOOR_OPENED'|'SERVER_EVENT_TRIGGERED'|'PROJECT_ADVANCED'|'THRESHOLD_PASSED'|'TITLE_CHANGED';
 
 export interface GameEvent { id?: string; type: EventType; actorId: string; targetId?: string; locationId?: string; payload?: Record<string, unknown>; at: Date; }
@@ -13,6 +14,7 @@ export interface LocationExitView { directionKey:string;shape:string;label:strin
 export interface MoveResult { from:string; to:string; toName:string; directionKey?:string; }
 export interface DropResult { id:string; name:string; }
 export interface UnderstandingUpdate { currentTitle:string; hiddenTier:number; titleChanged:boolean; tierChanged:boolean; }
+export interface RelationshipMaintenanceResult { npcId:string; npcName:string; task:string; familiarity:number; trust:number; level:string; established:boolean; }
 export interface CommandResult { lines:string[]; events:GameEvent[]; discoveredConcept?:string; semantic?:{kind:string;verb:string;category?:string;confidence?:number}; }
 
 export interface GameRepository {
@@ -28,6 +30,7 @@ export interface GameRepository {
   takeItem(playerId:string,itemId:string): Promise<boolean>;
   dropItem(playerId:string,itemId:string): Promise<DropResult|null>;
   openEntity(playerId:string,entityId:string): Promise<boolean>;
+  maintainRelationship(playerId:string,npcId:string): Promise<RelationshipMaintenanceResult|null>;
   discoverConcept(playerId:string,concept:string): Promise<boolean>;
   registerSemanticProbe(playerId:string,concept:string,surface:string): Promise<{distinct:number;hintLevel:number}>;
   registerInquiry(playerId:string,signature:string): Promise<number>;
