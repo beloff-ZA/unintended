@@ -21,6 +21,7 @@ const cleanEntity=(value:string)=>normalise(value).replace(/^(please\s+)?(the|a|
 function itemView(item:typeof entities.$inferSelect,held=false):EntityView{
  return {id:item.id,name:item.name,kind:item.kind as EntityView['kind'],locationId:item.locationId??undefined,portable:item.portable,openable:item.openable,open:item.open,held,facts:held?[`${item.name} is in your possession.`,'Possession has made it easier to inspect, not necessarily easier to understand.',...(item.openable?[item.open?'It is open.':'It appears capable of opening.']:[])]:[`${item.name} is here.`,item.portable?'It looks movable.':'It does not look conveniently movable.',...(item.openable?[item.open?'It is open.':'It appears capable of opening.']:[])]};
 }
+function npcView(npc:typeof npcState.$inferSelect):EntityView{return {id:npc.id,name:npc.name,kind:'NPC',locationId:npc.locationId,facts:[`${npc.name} is here.`,npc.job==='unknown'?`${npc.name}'s occupation is not obvious.`:`${npc.name} appears to work as a ${npc.job}.`]};}
 
 export class PostgresGameRepository implements GameRepository {
  async getActor(id:string):Promise<ActorView>{
@@ -31,14 +32,14 @@ export class PostgresGameRepository implements GameRepository {
  async getLocationName(id:string){const [location]=await db.select().from(locations).where(eq(locations.id,id));return location?.name??'NOWHERE';}
  async listLocationEntities(locationId:string):Promise<EntityView[]>{
   const legacyItems=await db.select().from(entities).where(and(eq(entities.locationId,locationId),isNull(entities.ownerId),isNull(entities.mapId)));
-  const localNpcs=await db.select().from(npcState).where(eq(npcState.locationId,locationId));
-  return [...legacyItems.map(item=>itemView(item)),...localNpcs.map(npc=>({id:npc.id,name:npc.name,kind:'NPC' as const,locationId:npc.locationId,facts:[`${npc.name} is here.`,npc.job==='unknown'?`${npc.name}'s occupation is not obvious.`:`${npc.name} appears to work as a ${npc.job}.`]}))];
+  const legacyNpcs=await db.select().from(npcState).where(and(eq(npcState.locationId,locationId),isNull(npcState.mapId)));
+  return [...legacyItems.map(item=>itemView(item)),...legacyNpcs.map(npcView)];
  }
  async listPlayerLocationEntities(playerId:string):Promise<EntityView[]>{
   const actor=await this.getActor(playerId),mapId=originForPlayer(playerId).id;
   const localItems=await db.select().from(entities).where(and(eq(entities.locationId,actor.locationId),eq(entities.mapId,mapId),isNull(entities.ownerId)));
-  const localNpcs=await db.select().from(npcState).where(eq(npcState.locationId,actor.locationId));
-  return [...localItems.map(item=>itemView(item)),...localNpcs.map(npc=>({id:npc.id,name:npc.name,kind:'NPC' as const,locationId:npc.locationId,facts:[`${npc.name} is here.`,npc.job==='unknown'?`${npc.name}'s occupation is not obvious.`:`${npc.name} appears to work as a ${npc.job}.`]}))];
+  const localNpcs=await db.select().from(npcState).where(and(eq(npcState.locationId,actor.locationId),eq(npcState.mapId,mapId)));
+  return [...localItems.map(item=>itemView(item)),...localNpcs.map(npcView)];
  }
  async listAccessibleEntities(playerId:string):Promise<EntityView[]>{
   const local=await this.listPlayerLocationEntities(playerId);const held=await db.select().from(entities).where(eq(entities.ownerId,playerId));
@@ -65,14 +66,14 @@ export class PostgresGameRepository implements GameRepository {
  async takeItem(playerId:string,itemId:string){
   const legacy=await db.select().from(anomalyOwners).where(and(eq(anomalyOwners.playerId,playerId),eq(anomalyOwners.anomalyId,'ownership-after-open')));const claims=await db.select({exception:anomalyClaimsV2.exception}).from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));const canCarryAwkward=legacy.length>0||claims.some(row=>(row.exception as any)?.primitive==='CARRY_AWKWARD');
   const [item]=await db.select().from(entities).where(eq(entities.id,itemId));if(!item)return false;const mapId=originForPlayer(playerId).id;if(item.mapId&&item.mapId!==mapId)return false;
-  const condition=canCarryAwkward?and(eq(entities.id,itemId),isNull(entities.ownerId)):and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));const [updated]=await db.update(entities).set({ownerId:playerId,locationId:null}).where(condition).returning();if(!updated)return false;
+  const condition=canCarryAwkward?and(eq(entities.id,itemId),isNull(entities.ownerId)):and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));const [updated]=await db.update(entities).set({ownerId:playerId,locationId:null,updatedAt:new Date()}).where(condition).returning();if(!updated)return false;
   if(updated.replenishes&&updated.mapId&&updated.templateId){const spawnLocation=(updated.data as Record<string,unknown>)?.spawnLocationId;await db.insert(entities).values({id:`${updated.mapId}:${updated.templateId}:r:${randomUUID()}`,name:updated.name,kind:updated.kind,mapId:updated.mapId,templateId:updated.templateId,locationId:typeof spawnLocation==='string'?spawnLocation:item.locationId,ownerId:null,portable:updated.portable,openable:updated.openable,open:false,replenishes:true,data:{...(updated.data as Record<string,unknown>),replacement:true}});}
   return true;
  }
- async dropItem(playerId:string,itemIdOrName:string){const [character]=await db.select().from(characters).where(eq(characters.id,playerId));if(!character)return null;const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=cleanEntity(itemIdOrName);const item=owned.find(row=>row.id===itemIdOrName||normalise(row.name)===q||normalise(row.name).includes(q));if(!item)return null;await db.update(entities).set({ownerId:null,locationId:character.locationId,mapId:item.mapId??originForPlayer(playerId).id}).where(eq(entities.id,item.id));return {id:item.id,name:item.name};}
- async openEntity(playerId:string,entityId:string){const mapId=originForPlayer(playerId).id;const [entity]=await db.select().from(entities).where(eq(entities.id,entityId));if(!entity||entity.ownerId!==playerId&&entity.mapId!==mapId)return false;const [updated]=await db.update(entities).set({open:true}).where(and(eq(entities.id,entityId),eq(entities.openable,true),eq(entities.open,false))).returning({id:entities.id});return !!updated;}
+ async dropItem(playerId:string,itemIdOrName:string){const [character]=await db.select().from(characters).where(eq(characters.id,playerId));if(!character)return null;const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=cleanEntity(itemIdOrName);const item=owned.find(row=>row.id===itemIdOrName||normalise(row.name)===q||normalise(row.name).includes(q));if(!item)return null;await db.update(entities).set({ownerId:null,locationId:character.locationId,mapId:item.mapId??originForPlayer(playerId).id,updatedAt:new Date()}).where(eq(entities.id,item.id));return {id:item.id,name:item.name};}
+ async openEntity(playerId:string,entityId:string){const mapId=originForPlayer(playerId).id;const [entity]=await db.select().from(entities).where(eq(entities.id,entityId));if(!entity||entity.ownerId!==playerId&&entity.mapId!==mapId)return false;const [updated]=await db.update(entities).set({open:true,updatedAt:new Date()}).where(and(eq(entities.id,entityId),eq(entities.openable,true),eq(entities.open,false))).returning({id:entities.id});return !!updated;}
  async maintainRelationship(playerId:string,npcId:string){
-  const actor=await this.getActor(playerId);const [npc]=await db.select().from(npcState).where(and(eq(npcState.id,npcId),eq(npcState.locationId,actor.locationId)));if(!npc)return null;
+  const actor=await this.getActor(playerId),mapId=originForPlayer(playerId).id;const [npc]=await db.select().from(npcState).where(and(eq(npcState.id,npcId),eq(npcState.locationId,actor.locationId),eq(npcState.mapId,mapId)));if(!npc)return null;
   const before=await relationshipSnapshot(playerId,npcId);const task=before?.maintenanceTask??'Help with something routine and mildly inconvenient.';
   await db.insert(worldEvents).values({type:'RELATIONSHIP_MAINTAINED',actorId:playerId,targetId:npcId,locationId:actor.locationId,payload:{task}});
   const after=await relationshipSnapshot(playerId,npcId);if(!after)return null;return {npcId,npcName:npc.name,task,familiarity:after.familiarity,trust:after.trust,level:after.level,established:after.established};
