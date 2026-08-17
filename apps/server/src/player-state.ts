@@ -14,6 +14,8 @@ const actionById=new Map(ACTION_CATALOG.map(action=>[action.id,action]));
 const actionCategories=[...new Set(ACTION_CATALOG.map(action=>action.category))];
 
 type Thread={id:string;title:string;detail:string;state:'OPEN'|'WATCHING'|'COOLING';};
+type AssistedAction={label:string;command:string;reason:string};
+
 function buildThreads(currentRegion:string,goals:Array<{id:string;complete:boolean;progress:number;target:number}>,concepts:Set<string>,inventoryNames:string[],relationships:Awaited<ReturnType<typeof relationshipsForPlayer>>,reach:Awaited<ReturnType<typeof socialReach>>):Thread[]{
   const threads:Thread[]=[];const contradiction=goals.find(goal=>goal.id.endsWith(':contradiction'));
   if(currentRegion==='bellweather'&&!contradiction?.complete)threads.push({id:'bellweather-discrepancy',title:'The Registry Discrepancy',detail:'Possession and recorded ownership disagree. Find enough evidence that the Registry can no longer pretend this is formatting.',state:'OPEN'});
@@ -21,6 +23,23 @@ function buildThreads(currentRegion:string,goals:Array<{id:string;complete:boole
   const cooling=relationships.find(row=>row.needsAttention&&row.lastInteractionAt);if(cooling)threads.push({id:`relationship:${cooling.npcId}`,title:`${cooling.npcName} Is Becoming Less Certain`,detail:cooling.maintenanceTask??'A small ordinary interaction would remind them that this relationship still exists.',state:'COOLING'});
   if(reach.maps.length<reach.totalMapCount)threads.push({id:'social-horizon',title:'Beyond Your Origin Map',detail:`${reach.maps.length} of ${reach.totalMapCount} known Maps are socially reachable from ${reach.origin.name}. Strong regional progress can establish new contact.`,state:'WATCHING'});
   return threads.slice(0,5);
+}
+
+function starterAssistance(locationId:string,concepts:Set<string>,inventoryNames:string[]):AssistedAction[]{
+ const result:AssistedAction[]=[{label:'Observe',command:'Look around',reason:'Establish what is actually here before accusing reality of anything.'}];
+ const inventoryLower=inventoryNames.map(name=>name.toLowerCase()),hasLetter=inventoryLower.some(name=>name.includes('letter')),hasLedger=inventoryLower.some(name=>name.includes('ledger'));
+ if(locationId==='bellweather-square')result.push({label:'Question someone',command:'Ask Courier about Registry',reason:'People occasionally know why the paperwork is wrong. They rarely volunteer this.'});
+ if(locationId==='registry-steps'){
+  if(!hasLetter)result.push({label:'Handle evidence',command:'Take letter',reason:'Some contradictions are easier to inspect when they are physically your problem.'});
+  if(hasLetter&&!concepts.has('READ'))result.push({label:'Inspect evidence',command:'Read letter',reason:'Written evidence is traditionally more useful after reading.'});
+  if((hasLetter||hasLedger)&&concepts.has('READ')&&!concepts.has('CLAIM'))result.push({label:'Test ownership',command:`Claim ${hasLetter?'letter':'ledger'}`,reason:'Bellweather distinguishes possession from ownership. Test the distinction.'});
+  result.push({label:'Question the record',command:'Ask Clerk about ownership',reason:'The Registry employs someone whose job makes this their problem.'});
+ }
+ if(locationId==='bakery')result.push({label:'Question locally',command:'Ask Baker about Registry',reason:'Ordinary people experience administrative nonsense differently from administrators.'});
+ if(locationId==='market-lane')result.push({label:'Question locally',command:'Ask Farmer about ownership',reason:'Trade and possession tend to make ownership less theoretical.'});
+ const location=worldLocationById.get(locationId);if(location){const first=Object.keys(location.exits)[0],direction=first?directionByKey.get(first):undefined;if(direction)result.push({label:'Travel',command:`Move ${direction.label}`,reason:'Routes are part of the evidence. Their names are intentionally unhelpful, not unusable.'});}
+ if(inventoryNames.length)result.push({label:'Check possessions',command:'Inventory',reason:'The Server can list what it currently accepts you are carrying.'});
+ return [...new Map(result.map(item=>[item.command.toLowerCase(),item])).values()].slice(0,5);
 }
 
 export async function buildPlayerState(playerId:string){
@@ -45,10 +64,12 @@ export async function buildPlayerState(playerId:string){
   const edges=[...edgeMap.values()],seenDirectionKeys=new Set(edges.map(edge=>edge.directionKey)),directions=world.directions.filter(direction=>seenDirectionKeys.has(direction.key));
   const knownConcepts=concepts.map(row=>row.concept),conceptSet=new Set(knownConcepts),inventoryNames=inventory.map(row=>row.name);
   const threads=buildThreads(progress.currentRegion,assessment.completedGoals,conceptSet,inventoryNames,relationships,social);
+  const assistanceActive=progress.currentRegion==='bellweather'&&assessment.grade==='FAIL';
   return {
     player:{id:character.id,name:character.name,locationId:character.locationId},knownConcepts,inventory:inventory.map(row=>({id:row.id,name:row.name})),
     actionCategories:[...actionCategories,'INQUIRY'],discoveredActions:knownConcepts.map(id=>id==='INQUIRE'?{id,category:'INQUIRY'}:(actionById.get(id)?{id,category:actionById.get(id)!.category}:undefined)).filter(Boolean),
-    progression:{title:progress.currentTitle,currentRegion:progress.currentRegion,assessment:assessment.assessment,goal:assessment.condition,goals:assessment.completedGoals,hint:assessment.hint,rewards:assessment.rewards,nextRegions:assessment.nextRegions},
+    progression:{title:progress.currentTitle,currentRegion:progress.currentRegion,assessment:assessment.assessment,grade:assessment.grade,goal:assessment.condition,goals:assessment.completedGoals,hint:assessment.hint,rewards:assessment.rewards,nextRegions:assessment.nextRegions},
+    assistance:{active:assistanceActive,title:'TEMPORARY ASSISTANCE',note:'These are examples of intentions, not the command list. Assistance is withdrawn after first proficiency.',suggestions:assistanceActive?starterAssistance(character.locationId,conceptSet,inventoryNames):[]},
     anomalies:claims.map(claim=>{const template=anomalyById.get(claim.templateId);return {id:claim.instanceId,name:template?.name??'Retained Exception',domain:template?.domain??'UNKNOWN',apparentUtility:(claim.exception as any)?.apparentUtility??claim.utility};}),
     memory:{rememberedDirectionCount:directions.length,nodes,edges,directions},
     social:{...social,assignmentLines:['ORIGIN ASSIGNED',social.origin.name,'This is now considered where you are from.','No appeal process has been discovered.']},
