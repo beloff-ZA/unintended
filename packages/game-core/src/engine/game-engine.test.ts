@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import { actionCatalogStats, applyUnderstandingEvidence, buildAdventure, buildWorld, EMPTY_UNDERSTANDING } from '@unintended/world-data';
+import { actionCatalogStats, applyUnderstandingEvidence, assessRetainableException, buildAdventure, buildWorld, EMPTY_UNDERSTANDING } from '@unintended/world-data';
 import { parseCommand, resolveSemanticInput } from '../commands/parser.js';
 import { incidentAlias } from '../systems/announcements.js';
 
@@ -18,6 +18,12 @@ describe('world simulation',()=>{
 describe('progression safeguards',()=>{
  it('rewards varied context more than repetition',()=>{const first=applyUnderstandingEvidence(EMPTY_UNDERSTANDING,{actionId:'LOOK',contextKey:'room:a',success:true,distinctContextOrdinal:1});const second=applyUnderstandingEvidence(first,{actionId:'LOOK',contextKey:'room:b',success:true,distinctContextOrdinal:2});const firstGain=first.perception,secondGain=second.perception-first.perception;expect(firstGain).toBeGreaterThan(secondGain);expect(secondGain).toBeGreaterThan(0);});
  it('keeps the authored ontology broad without exact surface collisions',()=>{const stats=actionCatalogStats();expect(stats.actions).toBeGreaterThan(100);expect(stats.surfaces).toBeGreaterThan(stats.actions);expect(stats.exactSurfaceCollisions).toBe(0);});
+});
+
+describe('retained exception policy',()=>{
+ it('retains bounded player-scoped server-authoritative powers',()=>expect(assessRetainableException({serverAuthoritative:true,singlePlayerScope:true,boundedUses:true,reversible:true,createsUniqueItems:false,createsCurrency:false,changesOtherPlayersState:false,affectsSecurityOrAdministration:false,unboundedComputeOrNetwork:false}).disposition).toBe('RETAIN'));
+ it('patches security-boundary effects regardless of novelty',()=>expect(assessRetainableException({serverAuthoritative:true,singlePlayerScope:true,boundedUses:true,reversible:true,createsUniqueItems:false,createsCurrency:false,changesOtherPlayersState:false,affectsSecurityOrAdministration:true,unboundedComputeOrNetwork:false}).disposition).toBe('PATCH'));
+ it('constrains interesting powers that are safe but currently unbounded',()=>expect(assessRetainableException({serverAuthoritative:true,singlePlayerScope:true,boundedUses:false,reversible:true,createsUniqueItems:false,createsCurrency:false,changesOtherPlayersState:false,affectsSecurityOrAdministration:false,unboundedComputeOrNetwork:false}).disposition).toBe('CONSTRAIN'));
 });
 
 describe('incident aliases',()=>{it('are deterministic for an incident',()=>{const x={event:'rain',location:'bakery',item:'apple',day:7};expect(incidentAlias(x)).toBe(incidentAlias(x));});});
