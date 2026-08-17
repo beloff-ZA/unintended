@@ -1,0 +1,29 @@
+{
+  "status": "LOCKED_DESIGN_ONLY",
+  "runtimeEnabled": false,
+  "includedInCurrentTests": false,
+  "systems": {
+    "mapRelationsAndRumours": {
+      "enabled": false,
+      "shape": ["MapRelation", "Rumour"]
+    },
+    "professionProgression": {
+      "enabled": false,
+      "shape": ["ProfessionRecognition", "ProfessionCapability"]
+    },
+    "centralProfessionalPoint": {
+      "enabled": false,
+      "workingNames": ["The Junction", "The Works"],
+      "shape": ["ProfessionalRepresentation", "DelegationPresence"]
+    },
+    "playerInstitutions": {
+      "enabled": false,
+      "shape": ["Institution", "InstitutionMembership", "InstitutionProject"]
+    },
+    "dimensionalZones": {
+      "enabled": false,
+      "shape": ["DimensionalZone", "ZoneProjection", "ZoneResidue"],
+      "lifecycle": ["FORMING", "UNSTABLE", "ACCESSIBLE", "COLLAPSING", "RESIDUAL"]
+    }
+  }
+}
