@@ -86,8 +86,8 @@ export async function relationshipSnapshot(playerId:string,npcId:string){
   const last=rows[0]?.createdAt??null;const ageDays=last?Math.max(0,(Date.now()-last.getTime())/86400000):999;
   const rawFamiliarity=Math.min(100,interactions*9+maintenance*24);const rawTrust=Math.min(100,interactions*3+maintenance*18);const established=maintenance>=3||rawTrust>=58||rawFamiliarity>=72;
   const familiarityFloor=established?34:0,trustFloor=established?24:0;
-  const familiarity=Math.max(familiarityFloor,Math.round(rawFamiliarity-ageDays*(established?.65:3.8)));
-  const trust=Math.max(trustFloor,Math.round(rawTrust-ageDays*(established?.3:1.2)));
+  const familiarity=Math.max(familiarityFloor,Math.round(rawFamiliarity-ageDays*(established?0.65:3.8)));
+  const trust=Math.max(trustFloor,Math.round(rawTrust-ageDays*(established?0.3:1.2)));
   const obligation=Math.min(100,maintenance*10);const level=relationshipLevel(familiarity,trust,established);
   const needsAttention=level!=='ENTRENCHED'&&(ageDays>2||level==='STRANGER'||level==='RECOGNISES');
   return {npcId,npcName:npc.name,level,familiarity,trust,obligation,established,lastInteractionAt:last?.toISOString()??null,needsAttention,maintenanceTask:needsAttention?maintenanceTask(playerId,npcId):null} satisfies RelationshipView;
