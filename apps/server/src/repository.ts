@@ -48,7 +48,8 @@ export class PostgresGameRepository implements GameRepository {
   return [...local,...held.map(item=>itemView(item,true))];
  }
  async listLocationExits(locationId:string):Promise<LocationExitView[]>{
-  const [location]=await db.select().from(locations).where(eq(locations.id,id));return location?.name??'NOWHERE';
+  const [location]=await db.select().from(locations).where(eq(locations.id,locationId));if(!location)return [];
+  const result:LocationExitView[]=[];for(const [directionKey,destinationId] of Object.entries(location.exits)){const direction=directionByKey.get(directionKey);if(!direction)continue;const [destination]=await db.select().from(locations).where(eq(locations.id,destinationId));result.push({directionKey,shape:direction.shape,label:direction.label,destinationId,destinationName:destination?.name});}return result;
  }
  async findVisibleEntity(locationId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listLocationEntities(locationId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
  async findPlayerVisibleEntity(playerId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listPlayerLocationEntities(playerId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
