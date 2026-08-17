@@ -7,13 +7,14 @@ import { createSession, destroySession, getSession, redis } from '../auth/sessio
 import { incidentAlias } from '@unintended/game-core';
 import { buildPlayerState } from '../player-state.js';
 import { ensureOriginAssigned } from '../social.js';
+import { attachMapLore } from '../map-lore.js';
 
 export async function apiRoutes(app:FastifyInstance){
  app.get('/api/health',async()=>({ok:true,service:'unintended'}));
  app.post('/api/auth/register',async(req,reply)=>{const {email,password,name}=req.body as any;if(!email||!password||!name)return reply.code(400).send({error:'Missing fields'});const passwordHash=await argon2.hash(password);const [u]=await db.insert(users).values({email:String(email).toLowerCase(),passwordHash}).returning();const [c]=await db.insert(characters).values({userId:u.id,name}).returning();await ensureOriginAssigned(c.id);const token=await createSession(c.id);reply.setCookie('session',token,{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',path:'/'});return {player:{id:c.id,name:c.name}};});
  app.post('/api/auth/login',async(req,reply)=>{const {email,password}=req.body as any;const [u]=await db.select().from(users).where(eq(users.email,String(email).toLowerCase()));if(!u?.passwordHash||!await argon2.verify(u.passwordHash,password))return reply.code(401).send({error:'Invalid credentials'});const [c]=await db.select().from(characters).where(eq(characters.userId,u.id));await ensureOriginAssigned(c.id);const token=await createSession(c.id);reply.setCookie('session',token,{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',path:'/'});return {player:{id:c.id,name:c.name}};});
  app.post('/api/auth/logout',async(req,reply)=>{await destroySession(req.cookies.session);reply.clearCookie('session',{path:'/'});return {ok:true};});
- app.get('/api/me',async(req,reply)=>{const id=await getSession(req.cookies.session);if(!id)return reply.code(401).send({error:'Unauthenticated'});await ensureOriginAssigned(id);const state=await buildPlayerState(id);if(!state)return reply.code(404).send({error:'Player missing'});return state;});
+ app.get('/api/me',async(req,reply)=>{const id=await getSession(req.cookies.session);if(!id)return reply.code(401).send({error:'Unauthenticated'});await ensureOriginAssigned(id);const state=await buildPlayerState(id);if(!state)return reply.code(404).send({error:'Player missing'});return attachMapLore(state,id);});
  const toys=new Set(['weather','time','wind','moon','sun','lights','birds','doors','bell']);
  app.post('/api/server-toys/:command',async(req,reply)=>{
   if(process.env.ALLOW_SERVER_TOY_API!=='true')return reply.code(404).send({error:'No such facility'});
