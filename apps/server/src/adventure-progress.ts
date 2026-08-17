@@ -3,6 +3,7 @@ import { buildAdventure, buildWorld, DEFAULT_WORLD_SEED, evaluateRegionThreshold
 import { db } from './db/index.js';
 import { anomalyClaimsV2, playerConcepts, regionProgress, worldEvents } from './db/schema.js';
 import { getPlayerProgress } from './progression.js';
+import { maybeLinkMapForProgress } from './social.js';
 
 const worldSeed=Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED);
 const world=buildWorld(worldSeed);
@@ -30,6 +31,7 @@ export async function assessCurrentRegion(playerId:string):Promise<RegionAssessm
   const newlyEligible=grade==='FAIL'?[]:region.rewards[grade],byKey=new Map([...existingRewards,...newlyEligible].map(reward=>[`${reward.kind}:${reward.key}`,reward]));rewards=[...byKey.values()];
   [stored]=await db.insert(regionProgress).values({playerId,regionId:region.id,grade,completedGoals:goals.filter(goal=>goal.complete).map(goal=>goal.id),rewards}).onConflictDoUpdate({target:[regionProgress.playerId,regionProgress.regionId],set:{grade,completedGoals:goals.filter(goal=>goal.complete).map(goal=>goal.id),rewards,updatedAt:new Date()}}).returning();
   if(grade!=='FAIL')await db.insert(worldEvents).values({type:'THRESHOLD_PASSED',actorId:playerId,locationId:null,payload:{regionId:region.id,grade,rewardKeys:newlyEligible.map(reward=>reward.key)}});
+  if(['COMPETENT','MASTERY'].includes(grade))await maybeLinkMapForProgress(playerId,region.id,grade);
  }
  const assessment=grade==='FAIL'?'INSUFFICIENT':grade==='BARE'?'SUFFICIENT':grade==='COMPETENT'?'STRONG':'COMPLETE',directionMap=new Map(world.directions.map(direction=>[direction.key,direction]));
  const nextRegions=Object.entries(region.exits).map(([directionKey,regionId])=>{const direction=directionMap.get(directionKey)!;return {directionKey,shape:direction?.shape??'?',label:direction?.label??'Some Way',regionId};});
