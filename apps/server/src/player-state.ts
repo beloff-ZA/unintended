@@ -1,10 +1,10 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { ACTION_CATALOG, ANOMALY_TEMPLATES, buildWorld, DEFAULT_WORLD_SEED } from '@unintended/world-data';
 import { db } from './db/index.js';
 import { anomalyClaimsV2, characters, entities, playerConcepts, worldEvents } from './db/schema.js';
 import { getPlayerProgress } from './progression.js';
 import { assessCurrentRegion } from './adventure-progress.js';
-import { relationshipsForPlayer, returnRecap, socialReach } from './social.js';
+import { activeRelationshipTask, originForPlayer, relationshipsForPlayer, returnRecap, socialReach } from './social.js';
 
 const world=buildWorld(Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED));
 const worldLocationById=new Map(world.locations.map(location=>[location.id,location]));
@@ -16,22 +16,24 @@ const actionCategories=[...new Set(ACTION_CATALOG.map(action=>action.category))]
 type Thread={id:string;title:string;detail:string;state:'OPEN'|'WATCHING'|'COOLING';};
 type AssistedAction={label:string;command:string;reason:string};
 
-function buildThreads(currentRegion:string,goals:Array<{id:string;complete:boolean;progress:number;target:number}>,concepts:Set<string>,inventoryNames:string[],relationships:Awaited<ReturnType<typeof relationshipsForPlayer>>,reach:Awaited<ReturnType<typeof socialReach>>):Thread[]{
+function buildThreads(currentRegion:string,goals:Array<{id:string;complete:boolean;progress:number;target:number}>,concepts:Set<string>,inventoryNames:string[],relationships:Awaited<ReturnType<typeof relationshipsForPlayer>>,reach:Awaited<ReturnType<typeof socialReach>>,favour:Awaited<ReturnType<typeof activeRelationshipTask>>):Thread[]{
   const threads:Thread[]=[];const contradiction=goals.find(goal=>goal.id.endsWith(':contradiction'));
+  if(favour)threads.push({id:favour.taskId,title:`A Small Favour for ${favour.npcName}`,detail:favour.description,state:'OPEN'});
   if(currentRegion==='bellweather'&&!contradiction?.complete)threads.push({id:'bellweather-discrepancy',title:'The Registry Discrepancy',detail:'Possession and recorded ownership disagree. Find enough evidence that the Registry can no longer pretend this is formatting.',state:'OPEN'});
   if(inventoryNames.some(name=>name.toLowerCase().includes('letter')))threads.push({id:'letter-elsewhere',title:'The Letter Is Elsewhere',detail:concepts.has('READ')?'The letter claims its bearer has it while the Registry records it elsewhere. Someone should be made to explain that.':'You possess a letter connected to the Registry. Reading it would be less decorative than carrying it.',state:'OPEN'});
-  const cooling=relationships.find(row=>row.needsAttention&&row.lastInteractionAt);if(cooling)threads.push({id:`relationship:${cooling.npcId}`,title:`${cooling.npcName} Is Becoming Less Certain`,detail:cooling.maintenanceTask??'A small ordinary interaction would remind them that this relationship still exists.',state:'COOLING'});
+  const cooling=relationships.find(row=>row.needsAttention&&row.lastInteractionAt);if(cooling&&!favour)threads.push({id:`relationship:${cooling.npcId}`,title:`${cooling.npcName} Is Becoming Less Certain`,detail:cooling.maintenanceTask??'A small ordinary interaction would remind them that this relationship still exists.',state:'COOLING'});
   if(reach.maps.length<reach.totalMapCount)threads.push({id:'social-horizon',title:'Beyond Your Origin Map',detail:`${reach.maps.length} of ${reach.totalMapCount} known Maps are socially reachable from ${reach.origin.name}. Strong regional progress can establish new contact.`,state:'WATCHING'});
   return threads.slice(0,5);
 }
 
-function starterAssistance(locationId:string,concepts:Set<string>,inventoryNames:string[]):AssistedAction[]{
+function starterAssistance(locationId:string,concepts:Set<string>,inventoryNames:string[],availableNames:string[]):AssistedAction[]{
  const result:AssistedAction[]=[{label:'Observe',command:'Look around',reason:'Establish what is actually here before accusing reality of anything.'}];
- const inventoryLower=inventoryNames.map(name=>name.toLowerCase()),hasLetter=inventoryLower.some(name=>name.includes('letter')),hasLedger=inventoryLower.some(name=>name.includes('ledger'));
+ const inventoryLower=inventoryNames.map(name=>name.toLowerCase()),availableLower=availableNames.map(name=>name.toLowerCase()),hasLetter=inventoryLower.some(name=>name.includes('letter')),hasLedger=inventoryLower.some(name=>name.includes('ledger'));
  if(locationId==='bellweather-square')result.push({label:'Question someone',command:'Ask Courier about Registry',reason:'People occasionally know why the paperwork is wrong. They rarely volunteer this.'});
  if(locationId==='registry-steps'){
-  if(!hasLetter)result.push({label:'Handle evidence',command:'Take letter',reason:'Some contradictions are easier to inspect when they are physically your problem.'});
-  if(hasLetter&&!concepts.has('READ'))result.push({label:'Inspect evidence',command:'Read letter',reason:'Written evidence is traditionally more useful after reading.'});
+  const evidence=availableLower.find(name=>name.includes('letter'))??availableLower.find(name=>name.includes('ledger'))??availableLower.find(name=>name.includes('receipt'));
+  if(!hasLetter&&!hasLedger&&evidence)result.push({label:'Handle evidence',command:`Take ${evidence}`,reason:'Use evidence that is actually available in your Origin Map. The Server has reluctantly checked.'});
+  if((hasLetter||hasLedger)&&!concepts.has('READ'))result.push({label:'Inspect evidence',command:`Read ${hasLetter?'letter':'ledger'}`,reason:'Written evidence is traditionally more useful after reading.'});
   if((hasLetter||hasLedger)&&concepts.has('READ')&&!concepts.has('CLAIM'))result.push({label:'Test ownership',command:`Claim ${hasLetter?'letter':'ledger'}`,reason:'Bellweather distinguishes possession from ownership. Test the distinction.'});
   result.push({label:'Question the record',command:'Ask Clerk about ownership',reason:'The Registry employs someone whose job makes this their problem.'});
  }
@@ -46,10 +48,11 @@ export async function buildPlayerState(playerId:string){
   const [character]=await db.select().from(characters).where(eq(characters.id,playerId));if(!character)return undefined;
   const concepts=await db.select().from(playerConcepts).where(eq(playerConcepts.playerId,playerId));
   const inventory=await db.select().from(entities).where(eq(entities.ownerId,playerId));
+  const mapId=originForPlayer(playerId).id,available=await db.select({name:entities.name}).from(entities).where(and(eq(entities.mapId,mapId),eq(entities.locationId,character.locationId),isNull(entities.ownerId)));
   const history=await db.select({type:worldEvents.type,locationId:worldEvents.locationId,payload:worldEvents.payload}).from(worldEvents).where(eq(worldEvents.actorId,playerId));
   const progress=await getPlayerProgress(playerId),assessment=await assessCurrentRegion(playerId);
   const claims=await db.select().from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));
-  const relationships=await relationshipsForPlayer(playerId),social=await socialReach(playerId),recap=await returnRecap(playerId,relationships);
+  const relationships=await relationshipsForPlayer(playerId),social=await socialReach(playerId),recap=await returnRecap(playerId,relationships),favour=await activeRelationshipTask(playerId);
 
   const visited=new Set<string>([character.locationId]),observed=new Set<string>();const traversed:Array<{from:string;to:string;directionKey?:string}>=[];
   for(const event of history){
@@ -62,14 +65,14 @@ export async function buildPlayerState(playerId:string){
   for(const step of traversed){if(!step.directionKey)continue;const direction=directionByKey.get(step.directionKey);if(!direction)continue;edgeMap.set(`${step.from}:${step.directionKey}:${step.to}`,{from:step.from,to:step.to,directionKey:step.directionKey,shape:direction.shape,label:direction.label,status:'known'});}
   for(const sourceId of observed){const source=worldLocationById.get(sourceId);if(!source)continue;for(const [directionKey,targetId] of Object.entries(source.exits)){const direction=directionByKey.get(directionKey);if(!direction)continue;const key=`${sourceId}:${directionKey}:${targetId}`;if(!edgeMap.has(key))edgeMap.set(key,{from:sourceId,to:targetId,directionKey,shape:direction.shape,label:direction.label,status:visited.has(targetId)?'known':'inferred'});}}
   const edges=[...edgeMap.values()],seenDirectionKeys=new Set(edges.map(edge=>edge.directionKey)),directions=world.directions.filter(direction=>seenDirectionKeys.has(direction.key));
-  const knownConcepts=concepts.map(row=>row.concept),conceptSet=new Set(knownConcepts),inventoryNames=inventory.map(row=>row.name);
-  const threads=buildThreads(progress.currentRegion,assessment.completedGoals,conceptSet,inventoryNames,relationships,social);
+  const knownConcepts=concepts.map(row=>row.concept),conceptSet=new Set(knownConcepts),inventoryNames=inventory.map(row=>row.name),availableNames=available.map(row=>row.name);
+  const threads=buildThreads(progress.currentRegion,assessment.completedGoals,conceptSet,inventoryNames,relationships,social,favour);
   const assistanceActive=progress.currentRegion==='bellweather'&&assessment.grade==='FAIL';
   return {
     player:{id:character.id,name:character.name,locationId:character.locationId},knownConcepts,inventory:inventory.map(row=>({id:row.id,name:row.name})),
     actionCategories:[...actionCategories,'INQUIRY'],discoveredActions:knownConcepts.map(id=>id==='INQUIRE'?{id,category:'INQUIRY'}:(actionById.get(id)?{id,category:actionById.get(id)!.category}:undefined)).filter(Boolean),
     progression:{title:progress.currentTitle,currentRegion:progress.currentRegion,assessment:assessment.assessment,grade:assessment.grade,goal:assessment.condition,goals:assessment.completedGoals,hint:assessment.hint,rewards:assessment.rewards,nextRegions:assessment.nextRegions},
-    assistance:{active:assistanceActive,title:'TEMPORARY ASSISTANCE',note:'These are examples of intentions, not the command list. Assistance is withdrawn after first proficiency.',suggestions:assistanceActive?starterAssistance(character.locationId,conceptSet,inventoryNames):[]},
+    assistance:{active:assistanceActive,title:'TEMPORARY ASSISTANCE',note:'These are examples of intentions, not the command list. Assistance is withdrawn after first proficiency.',suggestions:assistanceActive?starterAssistance(character.locationId,conceptSet,inventoryNames,availableNames):[]},
     anomalies:claims.map(claim=>{const template=anomalyById.get(claim.templateId);return {id:claim.instanceId,name:template?.name??'Retained Exception',domain:template?.domain??'UNKNOWN',apparentUtility:(claim.exception as any)?.apparentUtility??claim.utility};}),
     memory:{rememberedDirectionCount:directions.length,nodes,edges,directions},
     social:{...social,assignmentLines:['ORIGIN ASSIGNED',social.origin.name,'This is now considered where you are from.','No appeal process has been discovered.']},
