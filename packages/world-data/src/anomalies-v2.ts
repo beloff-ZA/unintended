@@ -101,23 +101,20 @@ function stableEvent(event:AnomalyEvent){
   return `${event.type}:${event.targetId??''}:${event.locationId??''}:${payload}`;
 }
 
-export function detectAnomalyCandidates(seed:number|string,recentEvents:AnomalyEvent[],understandingTier:number):AnomalyCandidate[]{
+export function detectAnomalyAttempts(seed:number|string,recentEvents:AnomalyEvent[],understandingTier:number):AnomalyCandidate[]{
   if(!recentEvents.length)return [];
-  const terminal=recentEvents[recentEvents.length-1]!.type;
-  const templates=ANOMALY_BY_LAST_EVENT.get(terminal)??[];
-  const found:AnomalyCandidate[]=[];
+  const terminal=recentEvents[recentEvents.length-1]!.type,templates=ANOMALY_BY_LAST_EVENT.get(terminal)??[],found:AnomalyCandidate[]=[];
   for(const template of templates){
     if(understandingTier<template.minimumUnderstanding||template.trigger.length>recentEvents.length)continue;
-    const tail=recentEvents.slice(-template.trigger.length);
-    if(!template.trigger.every((type,index)=>tail[index]!.type===type))continue;
-    if(!relationMatches(template.relation,tail))continue;
-    const contextSignature=tail.map(stableEvent).join('>');
-    const gate=hashString(`${seed}:${template.id}:${contextSignature}:gate`);
-    if(gate%template.rarityModulo!==0)continue;
-    const variant=hashString(`${seed}:${template.id}:${contextSignature}:variant`)%ANOMALY_VARIANT_SLOTS;
+    const tail=recentEvents.slice(-template.trigger.length);if(!template.trigger.every((type,index)=>tail[index]!.type===type)||!relationMatches(template.relation,tail))continue;
+    const contextSignature=tail.map(stableEvent).join('>'),variant=hashString(`${seed}:${template.id}:${contextSignature}:variant`)%ANOMALY_VARIANT_SLOTS;
     found.push({template,variant,contextSignature,instanceId:`${seed}:${template.id}:${variant.toString(36)}`});
   }
   return found;
+}
+
+export function detectAnomalyCandidates(seed:number|string,recentEvents:AnomalyEvent[],understandingTier:number):AnomalyCandidate[]{
+  return detectAnomalyAttempts(seed,recentEvents,understandingTier).filter(candidate=>hashString(`${seed}:${candidate.template.id}:${candidate.contextSignature}:gate`)%candidate.template.rarityModulo===0);
 }
 
 export function anomalyCatalogStats(){
