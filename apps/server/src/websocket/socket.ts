@@ -6,6 +6,8 @@ import { PostgresGameRepository } from '../repository.js';
 import { getSession, redis } from '../auth/session.js';
 import { AiOrchestrator } from '../ai/orchestrator.js';
 import { completeRelationshipTask, contactNpcNetwork, originForPlayer, socialReach, startRelationshipTask } from '../social.js';
+import { readDiary } from '../diary.js';
+import { parseServerCommand, runServerFacility } from '../server-facilities.js';
 
 const clients=new Map<string,Set<WebSocket>>();
 const relationshipCommand=/^(?:please\s+)?(?:check\s+in\s+(?:on|with)|check\s+on|help|assist|do\s+a\s+favou?r\s+for|run\s+an\s+errand\s+for)\s+(?:the\s+)?(.+)$/i;
@@ -13,6 +15,7 @@ const reportBackCommand=/^(?:report\s+back\s+to|complete\s+(?:the\s+)?favou?r\s+
 const contactCommand=/^(?:contact|call|message)\s+(?:the\s+)?(.+?)\s+(?:about|regarding)\s+(.+)$/i;
 const claimCommand=/^(?:claim|own|assert\s+ownership\s+(?:of\s+)?)(?:the\s+)?(.+)$/i;
 const announceCommand=/^(?:announce|map\s+say|say\s+to\s+(?:the\s+)?map)\s+(.+)$/i;
+const diaryCommand=/^read\s+(?:the\s+)?diary(?:\s+of\s+the\s+unintended)?(?:\s+page\s+(\d+))?$/i;
 function send(ws:WebSocket,data:unknown){if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(data));}
 async function broadcastSocial(playerId:string,data:unknown,except?:WebSocket){const reach=await socialReach(playerId),visibleMaps=new Set(reach.maps.map(map=>map.id));for(const [recipientId,set] of clients){if(!visibleMaps.has(originForPlayer(recipientId).id))continue;for(const ws of set)if(ws!==except)send(ws,data);}}
 
@@ -24,6 +27,12 @@ export function attachWebSocket(app:FastifyInstance){
    const bucket=`cmd:${playerId}:${Math.floor(Date.now()/10000)}`,count=await redis.incr(bucket);if(count===1)await redis.expire(bucket,12);if(count>30)return send(ws,{type:'OUTPUT',lines:['The Server has noticed your enthusiasm. Try fewer commands.'],at:new Date().toISOString()});
    const parsed=ClientCommand.safeParse(JSON.parse(raw.toString()));if(!parsed.success)return send(ws,{type:'OUTPUT',lines:['The Server declines to understand that packet.'],at:new Date().toISOString()});
    const text=parsed.data.text.trim();
+
+   const diaryMatch=text.match(diaryCommand);
+   if(diaryMatch){const lines=await readDiary(playerId,Number(diaryMatch[1]??1));return send(ws,{type:'OUTPUT',lines:lines??['You do not possess anything the Server recognises as that diary.'],at:new Date().toISOString()});}
+
+   const serverProbe=parseServerCommand(text);
+   if(serverProbe){const lines=await runServerFacility(playerId,serverProbe.facility,serverProbe.arg);return send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});}
 
    const announceMatch=text.match(announceCommand);
    if(announceMatch){
