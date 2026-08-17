@@ -5,10 +5,11 @@ import { ClientCommand } from '@unintended/shared';
 import { PostgresGameRepository } from '../repository.js';
 import { getSession, redis } from '../auth/session.js';
 import { AiOrchestrator } from '../ai/orchestrator.js';
-import { originForPlayer, socialReach } from '../social.js';
+import { completeRelationshipTask, originForPlayer, socialReach, startRelationshipTask } from '../social.js';
 
 const clients=new Map<string,Set<WebSocket>>();
 const relationshipCommand=/^(?:please\s+)?(?:check\s+in\s+(?:on|with)|check\s+on|help|assist|do\s+a\s+favou?r\s+for|run\s+an\s+errand\s+for)\s+(?:the\s+)?(.+)$/i;
+const reportBackCommand=/^(?:report\s+back\s+to|complete\s+(?:the\s+)?favou?r\s+for|return\s+to)\s+(?:the\s+)?(.+)$/i;
 const claimCommand=/^(?:claim|own|assert\s+ownership\s+(?:of\s+)?)(?:the\s+)?(.+)$/i;
 const announceCommand=/^(?:announce|map\s+say|say\s+to\s+(?:the\s+)?map)\s+(.+)$/i;
 function send(ws:WebSocket,data:unknown){if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(data));}
@@ -38,8 +39,11 @@ export function attachWebSocket(app:FastifyInstance){
     await repo.recordEvents([{type:'PLAYER_PROBED_CONCEPT',actorId:playerId,targetId:target.id,locationId:actor.locationId,payload:{concept:'CLAIM',ownershipAssertion:true},at:new Date()}]);send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});return;
    }
 
+   const reportMatch=text.match(reportBackCommand);
+   if(reportMatch){const actor=await repo.getActor(playerId),target=await repo.findPlayerVisibleEntity(playerId,reportMatch[1]!);if(target?.kind!=='NPC')return send(ws,{type:'OUTPUT',lines:['The Server understands the return. The intended person is not here to benefit from it.'],at:new Date().toISOString()});const completed=await completeRelationshipTask(playerId,target.id);if(!completed.ok){const lines=completed.reason==='NONE'?[`${target.name} has no outstanding favour from you.`]:completed.reason==='NOT_DONE'&&completed.task?[`The favour is not complete.`,`You were asked to go to ${completed.task.targetLocationName}, LOOK there, and return.`]:[`${target.name} is not currently available for this conclusion.`];return send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});}const relationship=completed.relationship;const lines=[`${target.name} accepts that you actually did the small thing you said you would do.`,`Relationship: ${relationship?.level??'RECORDED'}.`];if(relationship?.established)lines.push('History is beginning to do some of the remembering for you.');send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});return;}
+
    const relationshipMatch=text.match(relationshipCommand);
-   if(relationshipMatch){const actor=await repo.getActor(playerId),target=await repo.findVisibleEntity(actor.locationId,relationshipMatch[1]!);if(target?.kind!=='NPC')return send(ws,{type:'OUTPUT',lines:['The intended social maintenance is clear. The intended person is not currently available.'],at:new Date().toISOString()});const cooldownKey=`relationship-maintenance:${playerId}:${target.id}`,allowed=await redis.set(cooldownKey,'1','EX',12*60*60,'NX');if(!allowed)return send(ws,{type:'OUTPUT',lines:[`${target.name} remembers the recent effort. Additional proof of acquaintance is not currently required.`],at:new Date().toISOString()});const maintained=await repo.maintainRelationship(playerId,target.id);if(!maintained){await redis.del(cooldownKey);return send(ws,{type:'OUTPUT',lines:[`${target.name} is not in a position to participate in this relationship at present.`],at:new Date().toISOString()});}const lines=[`${target.name} allows you to be useful in a small, unheroic way.`,maintained.task,`Relationship: ${maintained.level}.`];if(maintained.established)lines.push('Routine maintenance is becoming less necessary. History is beginning to do some of the remembering for you.');send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});return;}
+   if(relationshipMatch){const target=await repo.findPlayerVisibleEntity(playerId,relationshipMatch[1]!);if(target?.kind!=='NPC')return send(ws,{type:'OUTPUT',lines:['The intended social maintenance is clear. The intended person is not currently available.'],at:new Date().toISOString()});const task=await startRelationshipTask(playerId,target.id);if(!task)return send(ws,{type:'OUTPUT',lines:[`${target.name} is not in a position to delegate ordinary inconvenience at present.`],at:new Date().toISOString()});send(ws,{type:'OUTPUT',lines:[`${target.name} allows you to be useful in a small, unheroic way.`,task.description,'This will count when you return having actually done it.'],at:new Date().toISOString()});return;}
 
    let result=await engine.execute(playerId,text),interpretedFrom:string|undefined;
    if(result.semantic?.kind==='UNKNOWN'){try{const rewritten=await ai.reinterpretKnown(playerId,text);if(rewritten&&rewritten.toLowerCase()!==text.toLowerCase()){interpretedFrom=rewritten;result=await engine.execute(playerId,rewritten);}}catch{}}
