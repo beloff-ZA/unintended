@@ -12,6 +12,14 @@ const rank:Record<ThresholdGrade,number>={FAIL:0,BARE:1,COMPETENT:2,MASTERY:3};
 
 export type RegionAssessment={regionId:string;name:string;condition:string;assessment:'INSUFFICIENT'|'SUFFICIENT'|'STRONG'|'COMPLETE';grade:ThresholdGrade;completedGoals:Array<{id:string;label:string;complete:boolean;progress:number;target:number}>;hint:string|null;rewards:RegionReward[];nextRegions:Array<{directionKey:string;shape:string;label:string;regionId:string}>;};
 
+function bellweatherGrade(input:{visited:number;concepts:number;questions:number;hasTake:boolean;hasRead:boolean;hasClaim:boolean;hiddenTier:number;completedGoals:number}):ThresholdGrade{
+ const evidence=input.hasTake&&input.hasRead&&input.hasClaim&&input.questions>=1;
+ if(!evidence||input.visited<3||input.concepts<4)return 'FAIL';
+ if(input.completedGoals>=4&&input.hiddenTier>=3&&input.visited>=5&&input.questions>=3)return 'MASTERY';
+ if(input.completedGoals>=4&&input.hiddenTier>=2&&input.questions>=2)return 'COMPETENT';
+ return 'BARE';
+}
+
 export async function assessCurrentRegion(playerId:string):Promise<RegionAssessment>{
  const progress=await getPlayerProgress(playerId),region=adventure.regions.find(row=>row.id===progress.currentRegion)??adventure.regions[0]!;
  const [visitedRow]=await db.select({count:sql<number>`count(distinct ${worldEvents.locationId})`}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),sql`${worldEvents.locationId} is not null`));
@@ -19,12 +27,14 @@ export async function assessCurrentRegion(playerId:string):Promise<RegionAssessm
  const conceptRows=await db.select({concept:playerConcepts.concept}).from(playerConcepts).where(eq(playerConcepts.playerId,playerId));
  const [anomalyRow]=await db.select({count:sql<number>`count(*)`}).from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));
  const visited=Number(visitedRow?.count??1)||1,questions=Number(questionRow?.count??0),concepts=conceptRows.length,conceptSet=new Set(conceptRows.map(row=>row.concept)),anomalies=Number(anomalyRow?.count??0);
- const bellweatherEvidence=region.id==='bellweather'&&conceptSet.has('TAKE')&&conceptSet.has('READ')&&questions>=1?1:0;
+ const bellweatherEvidence=region.id==='bellweather'&&conceptSet.has('TAKE')&&conceptSet.has('READ')&&conceptSet.has('CLAIM')&&questions>=1?1:0;
  const goals=region.goals.map(goal=>{
   let value=0;if(goal.kind==='OBSERVE')value=visited;else if(goal.kind==='DISCOVER')value=concepts;else if(goal.kind==='INTERACT')value=questions;else if(goal.kind==='CONTRADICTION')value=region.id==='bellweather'?bellweatherEvidence:anomalies;else if(goal.kind==='PROJECT')value=0;else value=Math.max(visited,concepts);
   return {...goal,progress:Math.min(goal.target,value),complete:goal.target===0||value>=goal.target};
  });
- const grade=evaluateRegionThreshold(region,progress.understanding,{visitedLocations:visited,discoveredConcepts:concepts,anomalies,completedGoals:goals.filter(goal=>goal.complete).length});
+ const grade=region.id==='bellweather'
+  ?bellweatherGrade({visited,concepts,questions,hasTake:conceptSet.has('TAKE'),hasRead:conceptSet.has('READ'),hasClaim:conceptSet.has('CLAIM'),hiddenTier:progress.hiddenTier,completedGoals:goals.filter(goal=>goal.complete).length})
+  :evaluateRegionThreshold(region,progress.understanding,{visitedLocations:visited,discoveredConcepts:concepts,anomalies,completedGoals:goals.filter(goal=>goal.complete).length});
  let [stored]=await db.select().from(regionProgress).where(and(eq(regionProgress.playerId,playerId),eq(regionProgress.regionId,region.id)));
  const existingRewards=(stored?.rewards??[]) as RegionReward[];let rewards=existingRewards;
  if(!stored||rank[grade]>rank[stored.grade as ThresholdGrade]){
@@ -36,7 +46,12 @@ export async function assessCurrentRegion(playerId:string):Promise<RegionAssessm
  const assessment=grade==='FAIL'?'INSUFFICIENT':grade==='BARE'?'SUFFICIENT':grade==='COMPETENT'?'STRONG':'COMPLETE',directionMap=new Map(world.directions.map(direction=>[direction.key,direction]));
  const nextRegions=Object.entries(region.exits).map(([directionKey,regionId])=>{const direction=directionMap.get(directionKey)!;return {directionKey,shape:direction?.shape??'?',label:direction?.label??'Some Way',regionId};});
  let hint=grade==='FAIL'?insufficientThresholdHint(region,progress.understanding):null;
- if(region.id==='bellweather'&&!bellweatherEvidence){if(!conceptSet.has('TAKE'))hint='Bellweather expects you to establish possession, not merely observe it.';else if(!conceptSet.has('READ'))hint='The Registry problem appears to involve written records. Possession alone is not enough evidence.';else if(questions<1)hint='You have evidence. Someone local should now be made to acknowledge what it implies.';}
+ if(region.id==='bellweather'&&!bellweatherEvidence){
+  if(!conceptSet.has('TAKE'))hint='Bellweather expects you to establish possession, not merely observe it.';
+  else if(!conceptSet.has('READ'))hint='The Registry problem appears to involve written records. Possession alone is not enough evidence.';
+  else if(!conceptSet.has('CLAIM'))hint='You possess evidence. Try asserting that something in your possession is actually yours.';
+  else if(questions<1)hint='You have evidence. Someone local should now be made to acknowledge what it implies.';
+ }else if(region.id==='bellweather'&&grade==='FAIL')hint='The contradiction is visible. Bellweather still expects you to explore enough of the local record to prove this was not an accident.';
  return {regionId:region.id,name:region.name,condition:region.contradiction,assessment,grade,completedGoals:goals.map(goal=>({id:goal.id,label:goal.label,complete:goal.complete,progress:goal.progress,target:goal.target})),hint,rewards,nextRegions};
 }
 
