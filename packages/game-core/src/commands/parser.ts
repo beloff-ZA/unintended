@@ -3,6 +3,7 @@ import type { CommandIntent } from '../model.js';
 
 export const ACTION_CATEGORY:Record<string,string>=Object.fromEntries([...ACTION_BY_ID.values()].map(action=>[action.id,action.category]));
 ACTION_CATEGORY.INQUIRE='INQUIRY';
+ACTION_CATEGORY.CHECK_IN='SOCIAL';
 
 const LEGACY_HINTS:Record<string,string>={
   stroll:'MOVE',wander:'MOVE',walk:'MOVE',head:'MOVE',proceed:'MOVE',goto:'MOVE',go:'MOVE',travel:'MOVE',return:'MOVE',
@@ -12,6 +13,7 @@ const LOOK_AROUND=/^(look|observe|inspect|check)(\s+(around|around me|here|surro
 const WHAT_HERE=/^(what('?s| is) here|where am i|describe (here|this place)|show me around)$/i;
 const ASK_PATTERN=/^(ask|question)\s+(?:the\s+)?(.+?)(?:\s+(about|why|what|who|where|when|how|whether|if)\s+)(.+)$/i;
 const SPEAK_PATTERN=/^(speak|talk|chat)\s+(?:to|with)?\s*(?:the\s+)?(.+)$/i;
+const CHECK_IN_PATTERN=/^(?:check\s+in\s+(?:on|with)|check\s+on|help|assist|do\s+a\s+favou?r\s+for|run\s+an\s+errand\s+for)\s+(?:the\s+)?(.+)$/i;
 
 export type SemanticIntent={
   kind:'COMMAND'|'PROXIMITY'|'INQUIRY'|'UNKNOWN';
@@ -44,6 +46,8 @@ function normaliseMovement(clean:string){
 export function resolveSemanticInput(raw:string,knownConcepts:Set<string>):SemanticIntent{
   const parsed=parseCommand(raw);let clean=parsed.raw;if(!clean)return {kind:'UNKNOWN',...parsed,exact:false};clean=stripPolitePrefix(clean);
   if(LOOK_AROUND.test(clean)||WHAT_HERE.test(clean))return {kind:'COMMAND',verb:'LOOK',args:[],raw:clean,exact:/^look$/i.test(clean),category:'PERCEPTION',confidence:.98,surfaceVerb:'look',matchedSurface:'look'};
+  const checkIn=clean.match(CHECK_IN_PATTERN);
+  if(checkIn)return {kind:'COMMAND',verb:'CHECK_IN',args:[checkIn[1]!.trim()],raw:clean,exact:false,category:'SOCIAL',confidence:.98,surfaceVerb:'check in',matchedSurface:'check in'};
   const ask=clean.match(ASK_PATTERN);
   if(ask){const npc=ask[2]!.trim(),marker=ask[3]!.toLowerCase(),rest=ask[4]!.trim();const composed=marker==='about'?rest:`${marker} ${rest}`;return {kind:'INQUIRY',verb:'INQUIRE',args:[npc,composed],raw:clean,exact:false,category:'INQUIRY',confidence:.96,questionKind:questionKind(composed),subject:npc,specificity:Math.min(1,.55+rest.split(/\s+/).length*.08),questionScope:'ENTITY'};}
   const speak=clean.match(SPEAK_PATTERN);
