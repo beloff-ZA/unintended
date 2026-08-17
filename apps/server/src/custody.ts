@@ -1,5 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from './db/index.js';
+import { redis } from './auth/session.js';
 import { anomalyClaimsV2, characters, entities, importantHistory, playerProgress, worldEvents } from './db/schema.js';
 import { originForPlayer } from './social.js';
 
@@ -27,26 +28,31 @@ async function anomalyCount(playerId:string){const rows=await db.select({id:anom
 async function samePlace(a:string,b:string){const rows=await db.select().from(characters).where(inArray(characters.id,[a,b]));if(rows.length!==2)return false;return rows[0]!.locationId===rows[1]!.locationId&&originForPlayer(a).id===originForPlayer(b).id;}
 
 async function eligible(input:{mode:TransferMode;item:EntityRow;from:string;to:string}){
- const cls=custodyClassFor(input.item);if(cls==='BOUND')return {ok:false,reason:'BOUND'} as const;
+ const cls=custodyClassFor(input.item),data=dataOf(input.item);if(cls==='BOUND')return {ok:false,reason:'BOUND'} as const;
  if(!await samePlace(input.from,input.to))return {ok:false,reason:'DISTANCE'} as const;
+ const loanedFrom=typeof data.loanedFrom==='string'?data.loanedFrom:null;
+ if(loanedFrom&&input.from!==loanedFrom){
+  if(input.mode==='GIVE'&&input.to===loanedFrom)return {ok:true,cls,returningLoan:true} as const;
+  return {ok:false,reason:'LOANED'} as const;
+ }
  const [fromProgress,toProgress,fromAnomalies,toAnomalies]=await Promise.all([progressFor(input.from),progressFor(input.to),anomalyCount(input.from),anomalyCount(input.to)]);
  const fromTier=fromProgress?.hiddenTier??0,toTier=toProgress?.hiddenTier??0;
  if(cls==='OPEN')return {ok:true,cls} as const;
  if(cls==='CONTROLLED'){
   if(input.mode==='GIVE'||input.mode==='LEND')return {ok:toTier>=1,reason:toTier>=1?undefined:'RESISTS',cls} as const;
   if(input.mode==='TRADE')return {ok:fromTier>=2&&toTier>=2,reason:'RESISTS',cls} as const;
-  return {ok:fromTier>=3&&fromAnomalies>=2&&toTier>=2,reason:'RESISTS',cls} as const;
+  const victimOnline=await redis.get(`presence:${input.to}`);return {ok:fromTier>=3&&fromAnomalies>=2&&toTier>=2&&!!victimOnline,reason:'RESISTS',cls} as const;
  }
  // CONTESTED. These are deliberately asymmetric. The unfairer the change, the more history must already exist.
  if(input.mode==='GIVE')return {ok:fromTier>=4&&toTier>=4&&toAnomalies>=3,reason:'RESISTS',cls} as const;
  if(input.mode==='LEND')return {ok:fromTier>=4&&toTier>=3&&toAnomalies>=2,reason:'RESISTS',cls} as const;
  if(input.mode==='TRADE')return {ok:fromTier>=5&&toTier>=5&&fromAnomalies>=4&&toAnomalies>=4,reason:'RESISTS',cls} as const;
- const ownerHistory=await db.select({id:worldEvents.id}).from(worldEvents).where(and(eq(worldEvents.actorId,input.to),eq(worldEvents.targetId,input.item.id))).limit(3);
- return {ok:fromTier>=6&&fromAnomalies>=7&&toTier>=4&&ownerHistory.length>=1,reason:'RESISTS',cls} as const;
+ const [ownerHistory,victimOnline]=await Promise.all([db.select({id:worldEvents.id}).from(worldEvents).where(and(eq(worldEvents.actorId,input.to),eq(worldEvents.targetId,input.item.id))).limit(3),redis.get(`presence:${input.to}`)]);
+ return {ok:fromTier>=6&&fromAnomalies>=7&&toTier>=4&&ownerHistory.length>=1&&!!victimOnline,reason:'RESISTS',cls} as const;
 }
 
 async function itemOwnedBy(playerId:string,itemText:string){const rows=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=itemText.trim().toLowerCase();return rows.find(row=>row.name.toLowerCase()===q)||rows.find(row=>row.name.toLowerCase().includes(q));}
-export async function resolvePlayerAtSamePlace(actorId:string,name:string){const [actor]=await db.select().from(characters).where(eq(characters.id,actorId));if(!actor)return null;const rows=await db.select().from(characters).where(eq(characters.locationId,actor.locationId));const q=name.trim().toLowerCase();return rows.find(row=>row.id!==actorId&&originForPlayer(row.id).id===originForPlayer(actorId).id&&row.name.toLowerCase()===q)??rows.find(row=>row.id!==actorId&&originForPlayer(row.id).id===originForPlayer(actorId).id&&row.name.toLowerCase().includes(q))??null;}
+export async function resolvePlayerAtSamePlace(actorId:string,name:string){const [actor]=await db.select().from(characters).where(eq(characters.id,actorId));if(!actor)return null;const rows=await db.select().from(characters).where(eq(characters.locationId,actor.locationId));const q=name.trim().toLowerCase();const matches=rows.filter(row=>row.id!==actorId&&originForPlayer(row.id).id===originForPlayer(actorId).id&&(row.name.toLowerCase()===q||row.name.toLowerCase().includes(q)));for(const row of matches)if(await redis.get(`presence:${row.id}`))return row;return null;}
 
 async function recordChange(mode:TransferMode,item:EntityRow,from:string,to:string){
  await db.insert(worldEvents).values({type:'ITEM_TRANSFERRED',actorId:from,targetId:item.id,locationId:null,payload:{mode,fromPlayerId:from,toPlayerId:to,custodyClass:custodyClassFor(item)}});
@@ -55,8 +61,8 @@ async function recordChange(mode:TransferMode,item:EntityRow,from:string,to:stri
 
 export async function giveItem(from:string,to:string,itemText:string,mode:'GIVE'|'LEND'='GIVE'){
  const item=await itemOwnedBy(from,itemText);if(!item)return {ok:false,reason:'NOT_HELD' as const};const allowed=await eligible({mode,item,from,to});if(!allowed.ok)return {ok:false,reason:allowed.reason??'RESISTS',item,cls:custodyClassFor(item)};
- const extra=mode==='LEND'?{loanedFrom:from,loanedTo:to,loanDueAt:new Date(Date.now()+DEFAULT_LOAN_HOURS*3600000).toISOString()}:{};
- const [moved]=await db.update(entities).set({ownerId:to,locationId:null,updatedAt:new Date(),data:{...dataOf(item),...extra}}).where(and(eq(entities.id,item.id),eq(entities.ownerId,from))).returning();if(!moved)return {ok:false,reason:'CHANGED' as const};await recordChange(mode,item,from,to);return {ok:true,item:moved,cls:custodyClassFor(item)};
+ const nextData={...dataOf(item)};if((allowed as any).returningLoan){delete nextData.loanedFrom;delete nextData.loanedTo;delete nextData.loanDueAt;}else if(mode==='LEND'){nextData.loanedFrom=from;nextData.loanedTo=to;nextData.loanDueAt=new Date(Date.now()+DEFAULT_LOAN_HOURS*3600000).toISOString();}
+ const [moved]=await db.update(entities).set({ownerId:to,locationId:null,updatedAt:new Date(),data:nextData}).where(and(eq(entities.id,item.id),eq(entities.ownerId,from))).returning();if(!moved)return {ok:false,reason:'CHANGED' as const};await recordChange(mode,item,from,to);return {ok:true,item:moved,cls:custodyClassFor(item)};
 }
 
 export async function stealItem(thief:string,victim:string,itemText:string){const item=await itemOwnedBy(victim,itemText);if(!item)return {ok:false,reason:'NOT_FOUND' as const};const allowed=await eligible({mode:'STEAL',item,from:thief,to:victim});if(!allowed.ok)return {ok:false,reason:allowed.reason??'RESISTS',item,cls:custodyClassFor(item)};const [moved]=await db.update(entities).set({ownerId:thief,locationId:null,updatedAt:new Date(),data:{...dataOf(item),stolenFrom:victim,stolenAt:new Date().toISOString()}}).where(and(eq(entities.id,item.id),eq(entities.ownerId,victim))).returning();if(!moved)return {ok:false,reason:'CHANGED' as const};await recordChange('STEAL',item,victim,thief);return {ok:true,item:moved,cls:custodyClassFor(item)};}
