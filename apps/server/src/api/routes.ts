@@ -16,6 +16,7 @@ export async function apiRoutes(app:FastifyInstance){
  app.get('/api/me',async(req,reply)=>{const id=await getSession(req.cookies.session);if(!id)return reply.code(401).send({error:'Unauthenticated'});await ensureOriginAssigned(id);const state=await buildPlayerState(id);if(!state)return reply.code(404).send({error:'Player missing'});return state;});
  const toys=new Set(['weather','time','wind','moon','sun','lights','birds','doors','bell']);
  app.post('/api/server-toys/:command',async(req,reply)=>{
+  if(process.env.ALLOW_SERVER_TOY_API!=='true')return reply.code(404).send({error:'No such facility'});
   const playerId=await getSession(req.cookies.session); if(!playerId)return reply.code(401).send({error:'Unauthenticated'});
   const command=String((req.params as any).command).toLowerCase(); if(!toys.has(command))return reply.code(404).send({error:'No such facility'});
   const rate=await redis.incr(`toy:${playerId}:${Math.floor(Date.now()/60000)}`); if(rate===1)await redis.expire(`toy:${playerId}:${Math.floor(Date.now()/60000)}`,65); if(rate>5)return reply.code(429).send({error:'The Server is busy regretting previous permissions.'});
