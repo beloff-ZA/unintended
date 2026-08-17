@@ -12,7 +12,9 @@ export type UnderstandingEvidence = {
   contextKey: string;
   success: boolean;
   distinctContextOrdinal: number;
+  contextRepeatOrdinal?: number;
   anomaly?: boolean;
+  anomalyNoveltyOrdinal?: number;
   thresholdGrade?: 'BARE'|'COMPETENT'|'MASTERY';
 };
 
@@ -27,23 +29,33 @@ const CATEGORY_DIMENSION: Record<ActionCategory, UnderstandingDimension> = {
   OWNERSHIP:'ownership',CAUSALITY:'causality',
 };
 
+function repeatWeight(ordinal:number){
+  if(ordinal<=1)return 1;
+  if(ordinal===2)return .18;
+  if(ordinal===3)return .05;
+  return .01;
+}
+
 export function applyUnderstandingEvidence(current: Partial<UnderstandingProfile>, evidence: UnderstandingEvidence): UnderstandingProfile {
   const next = { ...EMPTY_UNDERSTANDING, ...current };
   const action = evidence.actionId ? ACTION_BY_ID.get(evidence.actionId) : undefined;
   const category = evidence.category ?? action?.category;
+  const repeated=repeatWeight(Math.max(1,evidence.contextRepeatOrdinal??1));
   if (category) {
     const dimension = CATEGORY_DIMENSION[category];
     const novelty = Math.max(0.06, 1 / Math.sqrt(Math.max(1, evidence.distinctContextOrdinal)));
     const successFactor = evidence.success ? 1 : 0.28;
     const complexity = 1 + Math.min(4, action?.minimumUnderstanding ?? 0) * 0.16;
-    next[dimension] += 2.4 * novelty * successFactor * complexity;
+    next[dimension] += 2.4 * novelty * successFactor * complexity * repeated;
   }
-  if (evidence.anomaly) next.anomaly_reasoning += 8;
-  if (evidence.thresholdGrade === 'BARE') next.systems += 2;
-  if (evidence.thresholdGrade === 'COMPETENT') { next.systems += 5; next.knowledge += 2; }
-  if (evidence.thresholdGrade === 'MASTERY') { next.systems += 9; next.knowledge += 4; next.depth += 5; }
+  if (evidence.anomaly) {
+    const anomalyNovelty=Math.max(.08,1/Math.sqrt(Math.max(1,evidence.anomalyNoveltyOrdinal??1)));
+    next.anomaly_reasoning += 8 * anomalyNovelty * repeated;
+  }
+  if (evidence.thresholdGrade === 'BARE') next.systems += 2 * repeated;
+  if (evidence.thresholdGrade === 'COMPETENT') { next.systems += 5 * repeated; next.knowledge += 2 * repeated; }
+  if (evidence.thresholdGrade === 'MASTERY') { next.systems += 9 * repeated; next.knowledge += 4 * repeated; next.depth += 5 * repeated; }
 
-  const core = (Object.keys(CATEGORY_DIMENSION) as ActionCategory[]).map((category) => next[CATEGORY_DIMENSION[category]]);
   const uniqueDimensions = [...new Set(Object.values(CATEGORY_DIMENSION))];
   next.breadth = uniqueDimensions.filter((dimension) => next[dimension] >= 8).length * 3;
   next.depth = Math.max(next.depth, uniqueDimensions.filter((dimension) => next[dimension] >= 30).length * 4);
