@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import { actionCatalogStats, applyUnderstandingEvidence, assessRetainableException, buildAdventure, buildWorld, EMPTY_UNDERSTANDING } from '@unintended/world-data';
+import { actionCatalogStats, applyUnderstandingEvidence, assessRetainableException, buildAdventure, buildWorld, EMPTY_UNDERSTANDING, journeyFor, mapIdentityForMapId } from '@unintended/world-data';
 import { parseCommand, resolveSemanticInput } from '../commands/parser.js';
 import { incidentAlias } from '../systems/announcements.js';
 
@@ -13,6 +13,11 @@ describe('grammar',()=>{
 describe('world simulation',()=>{
  it('keeps generated physical worlds small, connected and non-cardinal',()=>{for(let seed=1;seed<=250;seed+=1){const world=buildWorld(seed);expect(world.directions.length).toBeGreaterThanOrEqual(3);expect(world.directions.length).toBeLessThanOrEqual(9);expect(new Set(world.directions.map(direction=>direction.label)).size).toBe(world.directions.length);const seen=new Set<string>(['bellweather-square']),queue=['bellweather-square'],byId=new Map(world.locations.map(location=>[location.id,location]));while(queue.length){const current=byId.get(queue.shift()!);if(!current)continue;for(const next of Object.values(current.exits))if(!seen.has(next)){seen.add(next);queue.push(next);}}expect(seen.size).toBe(world.locations.length);}});
  it('keeps every generated adventure reachable from Bellweather',()=>{for(let seed=1;seed<=250;seed+=1){const world=buildWorld(seed),adventure=buildAdventure(seed,world.directions);expect(adventure.regions.length).toBeGreaterThanOrEqual(8);expect(adventure.regions.length).toBeLessThanOrEqual(16);const byId=new Map(adventure.regions.map(region=>[region.id,region])),seen=new Set<string>([adventure.startRegionId]),queue=[adventure.startRegionId];while(queue.length){const region=byId.get(queue.shift()!);if(!region)continue;for(const next of Object.values(region.exits))if(!seen.has(next)){seen.add(next);queue.push(next);}}expect(seen.size).toBe(adventure.regions.length);}});
+});
+
+describe('investigation journeys',()=>{
+ it('moves from arrival to aftermath through evidence rather than visible quest counts',()=>{const map='map-1';expect(journeyFor(map,{visited:1,questions:0,handledEvidence:false,claimed:false,anomalyCount:0,serverProbes:0}).stage).toBe('ARRIVAL');expect(journeyFor(map,{visited:3,questions:2,handledEvidence:false,claimed:false,anomalyCount:0,serverProbes:0}).stage).toBe('INVESTIGATION');expect(journeyFor(map,{visited:4,questions:3,handledEvidence:true,claimed:true,anomalyCount:1,serverProbes:0}).stage).toBe('AFTERMATH');});
+ it('gives the six map cultures distinct unresolved questions',()=>{const byArchetype=new Map<string,string>();for(let i=1;i<=24;i+=1){const map=`map-${i}`,identity=mapIdentityForMapId(map),journey=journeyFor(map,{visited:3,questions:2,handledEvidence:false,claimed:false,anomalyCount:0,serverProbes:0});if(!byArchetype.has(identity.archetypeId))byArchetype.set(identity.archetypeId,journey.nextQuestion);}expect(byArchetype.size).toBe(6);expect(new Set(byArchetype.values()).size).toBe(6);});
 });
 
 describe('progression safeguards',()=>{
