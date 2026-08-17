@@ -12,6 +12,8 @@
     "db:migrate": "pnpm --filter @unintended/server db:migrate",
     "world:seed": "pnpm --filter @unintended/server world:seed",
     "world:reset": "pnpm --filter @unintended/server world:reset",
+    "cleanup": "pnpm --filter @unintended/server cleanup",
+    "cleanup:apply": "pnpm --filter @unintended/server cleanup:apply",
     "loadtest:100": "pnpm --filter @unintended/server exec node loadtest/100-bot.mjs"
   },
   "devDependencies": {"typescript":"^5.9.2"}
