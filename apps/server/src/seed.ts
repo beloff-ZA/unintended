@@ -6,11 +6,12 @@ import { SOCIAL_MAPS } from './social.js';
 const seed=Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED);
 const world=buildWorld(seed);
 const replenishableNames=new Set(['ledger','letter','receipt']);
+const globallyCapableNpcTemplates=new Set(['npc-courier','npc-clerk']);
 for(const location of world.locations){
  await db.insert(locations).values({id:location.id,name:location.name,exits:{...location.exits}}).onConflictDoUpdate({target:locations.id,set:{name:location.name,exits:{...location.exits}}});
 }
 for(const map of SOCIAL_MAPS){
- const rows=ITEMS.map(item=>({
+ const itemRows=ITEMS.map(item=>({
   id:`${map.id}:${item.id}`,
   templateId:item.id,
   mapId:map.id,
@@ -24,12 +25,23 @@ for(const map of SOCIAL_MAPS){
   replenishes:replenishableNames.has(item.name.toLowerCase()),
   data:{originMapId:map.id,spawnLocationId:item.locationId,templateId:item.id}
  }));
- await db.insert(entities).values(rows).onConflictDoNothing();
+ await db.insert(entities).values(itemRows).onConflictDoNothing();
+ const npcRows=NPCS.map(npc=>({
+  id:`${map.id}:${npc.id}`,
+  templateId:npc.id,
+  mapId:map.id,
+  name:npc.name,
+  locationId:npc.locationId,
+  job:npc.job,
+  globalCapable:globallyCapableNpcTemplates.has(npc.id),
+  memory:[],
+  data:{originMapId:map.id,templateId:npc.id}
+ }));
+ await db.insert(npcState).values(npcRows).onConflictDoNothing();
 }
-await db.insert(npcState).values(NPCS.map(x=>({...x,memory:[],data:{}}))).onConflictDoNothing();
 await db.insert(anomalies).values(ANOMALIES.map(x=>({id:x.id,name:'name' in x?x.name:undefined,domain:x.domain,doorKey:'doorKey' in x?x.doorKey:undefined,pattern:[...x.pattern]}))).onConflictDoNothing();
 await db.insert(worldDoors).values(WORLD_DOORS.map(x=>({key:x.key,name:x.name,open:x.initiallyOpen}))).onConflictDoNothing();
 await db.insert(projects).values(PROJECTS.map(x=>({id:x.id,name:x.name,requirements:x.requirements,progress:{}}))).onConflictDoNothing();
 await db.insert(worldFlags).values({key:'weather',value:{kind:'clear',until:null}}).onConflictDoNothing();
 await db.insert(worldFlags).values({key:'world-seed',value:{seed:world.seed,directionCount:world.directions.length,directions:world.directions}}).onConflictDoUpdate({target:worldFlags.key,set:{value:{seed:world.seed,directionCount:world.directions.length,directions:world.directions}}});
-console.log(`World seeded with ${world.directions.length} directional tendencies across ${SOCIAL_MAPS.length} origin maps.`);await pool.end();
+console.log(`World seeded with ${world.directions.length} directional tendencies across ${SOCIAL_MAPS.length} origin maps, including map-local NPCs.`);await pool.end();
