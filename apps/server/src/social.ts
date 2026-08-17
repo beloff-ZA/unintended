@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { DEFAULT_WORLD_SEED } from '@unintended/world-data';
+import { buildWorld, DEFAULT_WORLD_SEED } from '@unintended/world-data';
 import { db } from './db/index.js';
-import { importantHistory, npcState, worldEvents } from './db/schema.js';
+import { characters, importantHistory, npcState, worldEvents } from './db/schema.js';
 
 export type SocialMap = { id:string; name:string; facet:string; code:string };
 export type SocialMapLink = { from:string; to:string; source:'seed'|'world' };
@@ -9,17 +9,11 @@ export type RelationshipView = {
   npcId:string;npcName:string;level:string;familiarity:number;trust:number;obligation:number;
   established:boolean;lastInteractionAt:string|null;needsAttention:boolean;maintenanceTask:string|null;
 };
+export type ActiveRelationshipTask={taskId:string;npcId:string;npcName:string;targetLocationId:string;targetLocationName:string;description:string;startedAt:string};
 
 const seed=Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED);
+const world=buildWorld(seed);
 const FACET='Bellweather';
-const TASKS=[
-  'Return something small that has been borrowed for longer than dignity permits.',
-  'Carry a routine message to someone nearby.',
-  'Check whether a local delivery has arrived and report back.',
-  'Bring back a commonplace item they are currently missing.',
-  'Help with a brief closing, carrying, filing, or tidying job.',
-  'Confirm a local fact they could verify themselves but would rather delegate.',
-];
 
 function hash(value:string){let h=2166136261;for(const char of value){h^=char.charCodeAt(0);h=Math.imul(h,16777619);}return h>>>0;}
 const codeBase=hash(`${seed}:map-codes`)%800;
@@ -67,7 +61,7 @@ export async function maybeLinkMapForProgress(playerId:string,regionId:string,gr
 }
 
 function relationshipLevel(familiarity:number,trust:number,established:boolean){const score=familiarity*.65+trust*.35;if(established&&score>=82)return 'ENTRENCHED';if(score>=64)return 'TRUSTED';if(score>=44)return 'KNOWN';if(score>=24)return 'FAMILIAR';if(score>=8)return 'RECOGNISES';return 'STRANGER';}
-function maintenanceTask(playerId:string,npcId:string){const day=Math.floor(Date.now()/86400000);return TASKS[hash(`${seed}:${playerId}:${npcId}:${day}`)%TASKS.length]!;}
+function maintenanceTask(playerId:string,npcId:string){const day=Math.floor(Date.now()/86400000),choices=['They have a small errand that requires you to go somewhere else and actually come back.','A routine local fact needs checking. Apparently your legs have been nominated.','They need confirmation from elsewhere in Bellweather. This is beneath heroism and therefore suitable.'];return choices[hash(`${seed}:${playerId}:${npcId}:${day}`)%choices.length]!;}
 
 export async function relationshipSnapshot(playerId:string,npcId:string):Promise<RelationshipView|null>{
   const [npc]=await db.select().from(npcState).where(eq(npcState.id,npcId));if(!npc)return null;
@@ -83,12 +77,27 @@ export async function relationshipSnapshot(playerId:string,npcId:string):Promise
 export async function relationshipsForPlayer(playerId:string):Promise<RelationshipView[]>{
   const targets=await db.selectDistinct({targetId:worldEvents.targetId}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),inArray(worldEvents.type,['PLAYER_ASKED_QUESTION','RELATIONSHIP_MAINTAINED']),sql`${worldEvents.targetId} is not null`));
   const relationships:RelationshipView[]=[];
-  for(const row of targets){
-    if(!row.targetId)continue;
-    const relationship=await relationshipSnapshot(playerId,row.targetId);
-    if(relationship)relationships.push(relationship);
-  }
+  for(const row of targets){if(!row.targetId)continue;const relationship=await relationshipSnapshot(playerId,row.targetId);if(relationship)relationships.push(relationship);}
   return relationships;
+}
+
+export async function activeRelationshipTask(playerId:string,npcId?:string):Promise<ActiveRelationshipTask|null>{
+ const starts=await db.select({targetId:worldEvents.targetId,payload:worldEvents.payload,createdAt:worldEvents.createdAt}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),eq(worldEvents.type,'RELATIONSHIP_TASK_STARTED'))).orderBy(desc(worldEvents.createdAt)).limit(20);
+ const completes=await db.select({payload:worldEvents.payload}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),eq(worldEvents.type,'RELATIONSHIP_TASK_COMPLETED'))).orderBy(desc(worldEvents.createdAt)).limit(50);const completed=new Set(completes.map(row=>(row.payload as Record<string,unknown>)?.taskId).filter((value):value is string=>typeof value==='string'));
+ for(const row of starts){if(!row.targetId||npcId&&row.targetId!==npcId)continue;const payload=(row.payload??{}) as Record<string,unknown>,taskId=payload.taskId;if(typeof taskId!=='string'||completed.has(taskId))continue;const [npc]=await db.select().from(npcState).where(eq(npcState.id,row.targetId));if(!npc)continue;return {taskId,npcId:row.targetId,npcName:npc.name,targetLocationId:String(payload.targetLocationId??''),targetLocationName:String(payload.targetLocationName??''),description:String(payload.description??'Check something elsewhere and return.'),startedAt:row.createdAt.toISOString()};}
+ return null;
+}
+
+export async function startRelationshipTask(playerId:string,npcId:string):Promise<ActiveRelationshipTask|null>{
+ const existing=await activeRelationshipTask(playerId,npcId);if(existing)return existing;const [character]=await db.select().from(characters).where(eq(characters.id,playerId)),[npc]=await db.select().from(npcState).where(eq(npcState.id,npcId));if(!character||!npc||character.locationId!==npc.locationId)return null;
+ const candidates=world.locations.filter(location=>location.id!==npc.locationId);if(!candidates.length)return null;const target=candidates[hash(`${seed}:${playerId}:${npcId}:${Date.now()>>18}`)%candidates.length]!,taskId=`favour:${playerId}:${npcId}:${Date.now()}`;const description=`Go to ${target.name}, LOOK there, then return to ${npc.name} and report back.`;
+ await db.insert(worldEvents).values({type:'RELATIONSHIP_TASK_STARTED',actorId:playerId,targetId:npcId,locationId:character.locationId,payload:{taskId,targetLocationId:target.id,targetLocationName:target.name,description}});return {taskId,npcId,npcName:npc.name,targetLocationId:target.id,targetLocationName:target.name,description,startedAt:new Date().toISOString()};
+}
+
+export async function completeRelationshipTask(playerId:string,npcId:string){
+ const task=await activeRelationshipTask(playerId,npcId);if(!task)return {ok:false,reason:'NONE' as const};const [character]=await db.select().from(characters).where(eq(characters.id,playerId)),[npc]=await db.select().from(npcState).where(eq(npcState.id,npcId));if(!character||!npc||character.locationId!==npc.locationId)return {ok:false,reason:'NPC_NOT_HERE' as const};
+ const observed=await db.select({id:worldEvents.id}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),eq(worldEvents.type,'PLAYER_LOOKED'),eq(worldEvents.locationId,task.targetLocationId),sql`${worldEvents.createdAt} >= ${new Date(task.startedAt)}`)).limit(1);if(!observed.length)return {ok:false,reason:'NOT_DONE' as const,task};
+ await db.insert(worldEvents).values([{type:'RELATIONSHIP_TASK_COMPLETED',actorId:playerId,targetId:npcId,locationId:character.locationId,payload:{taskId:task.taskId}},{type:'RELATIONSHIP_MAINTAINED',actorId:playerId,targetId:npcId,locationId:character.locationId,payload:{taskId:task.taskId,task:task.description}}]);const relationship=await relationshipSnapshot(playerId,npcId);return {ok:true,task,relationship};
 }
 
 export async function returnRecap(playerId:string,relationships:RelationshipView[]){
