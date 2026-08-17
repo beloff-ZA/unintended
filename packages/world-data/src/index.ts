@@ -5,6 +5,7 @@ export * from './adventure.js';
 export * from './exception-policy.js';
 export * from './map-identities.js';
 export * from './player-journeys.js';
+export * from './map-versions.js';
 
 export type DirectionDefinition = { key:string; shape:string; label:string };
 export type WorldLocation = { id:string; name:string; x:number; y:number; exits:Record<string,string> };
