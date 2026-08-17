@@ -8,6 +8,8 @@ import { AiOrchestrator } from '../ai/orchestrator.js';
 import { completeRelationshipTask, contactNpcNetwork, originForPlayer, socialReach, startRelationshipTask } from '../social.js';
 import { readDiary } from '../diary.js';
 import { parseServerCommand, runServerFacility } from '../server-facilities.js';
+import { handleCustodyCommand } from '../custody-commands.js';
+import { maybeSurfaceHuntedArtifact } from '../hunted-items.js';
 
 const clients=new Map<string,Set<WebSocket>>();
 const relationshipCommand=/^(?:please\s+)?(?:check\s+in\s+(?:on|with)|check\s+on|help|assist|do\s+a\s+favou?r\s+for|run\s+an\s+errand\s+for)\s+(?:the\s+)?(.+)$/i;
@@ -33,6 +35,9 @@ export function attachWebSocket(app:FastifyInstance){
 
    const serverProbe=parseServerCommand(text);
    if(serverProbe){const lines=await runServerFacility(playerId,serverProbe.facility,serverProbe.arg);return send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});}
+
+   const custodyLines=await handleCustodyCommand(playerId,text);
+   if(custodyLines)return send(ws,{type:'OUTPUT',lines:custodyLines,at:new Date().toISOString()});
 
    const announceMatch=text.match(announceCommand);
    if(announceMatch){
@@ -60,6 +65,7 @@ export function attachWebSocket(app:FastifyInstance){
 
    let result=await engine.execute(playerId,text),interpretedFrom:string|undefined;
    if(result.semantic?.kind==='UNKNOWN'){try{const rewritten=await ai.reinterpretKnown(playerId,text);if(rewritten&&rewritten.toLowerCase()!==text.toLowerCase()){interpretedFrom=rewritten;result=await engine.execute(playerId,rewritten);}}catch{}}
+   if(result.events.some(event=>event.type==='PLAYER_DISCOVERED_ANOMALY')){const actor=await repo.getActor(playerId);await maybeSurfaceHuntedArtifact(playerId,actor.locationId);}
    let lines=result.lines;if(interpretedFrom)lines=[`The Server interpreted that as: ${interpretedFrom}`,...lines];else{try{const augmented=await ai.augment(playerId,text,result);if(augmented?.length)lines=augmented;}catch{}}
    send(ws,{type:'OUTPUT',lines,at:new Date().toISOString()});
    if(result.events.some(event=>['PLAYER_MOVED','ITEM_TAKEN','ITEM_DROPPED','DOOR_OPENED','PLAYER_DISCOVERED_ANOMALY','THRESHOLD_PASSED','MAP_LINKED'].includes(event.type)))await broadcastSocial(playerId,{type:'PRESENCE',text:'Something changed within your connected Maps.',at:new Date().toISOString()},ws);
