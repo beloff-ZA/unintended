@@ -22,14 +22,14 @@ const TASKS = [
 ];
 
 function hash(value:string){let h=2166136261;for(const char of value){h^=char.charCodeAt(0);h=Math.imul(h,16777619);}return h>>>0;}
-function codeFor(index:number){return String(100 + (hash(`${seed}:map:${index}`)%900)).padStart(3,'0');}
+function codeFor(index:number){return String(100+(hash(`${seed}:map:${index}`)%900)).padStart(3,'0');}
 
-export const SOCIAL_MAPS:SocialMap[] = Array.from({length:24},(_,index)=>{
+export const SOCIAL_MAPS:SocialMap[]=Array.from({length:24},(_,index)=>{
   const facet=FACETS[index%FACETS.length]!;const code=codeFor(index);
   return {id:`map-${index+1}`,facet,code,name:`${facet} ${code}`};
 });
 
-const SEEDED_LINKS:SocialMapLink[] = SOCIAL_MAPS.flatMap((map,index)=>{
+const SEEDED_LINKS:SocialMapLink[]=SOCIAL_MAPS.flatMap((map,index)=>{
   const clusterStart=Math.floor(index/4)*4;const within=index-clusterStart;const links:SocialMapLink[]=[];
   if(within<3)links.push({from:map.id,to:SOCIAL_MAPS[index+1]!.id,source:'seed'});
   return links;
@@ -66,9 +66,8 @@ export async function maybeLinkMapForProgress(playerId:string,regionId:string,gr
   if(!['COMPETENT','MASTERY'].includes(grade))return null;
   const reach=await socialReach(playerId);if(reach.maps.length>=SOCIAL_MAPS.length)return null;
   const outside=SOCIAL_MAPS.filter(map=>!reach.maps.some(current=>current.id===map.id));if(!outside.length)return null;
-  const target=outside[hash(`${playerId}:${regionId}:${grade}`)%outside.length]!;
-  const pair=[reach.origin.id,target.id].sort();
-  const existing=await db.select({id:worldEvents.id}).from(worldEvents).where(and(eq(worldEvents.type,'MAP_LINKED'),sql`(${worldEvents.payload}->>'fromMap' = ${pair[0]} and ${worldEvents.payload}->>'toMap' = ${pair[1]}) or (${worldEvents.payload}->>'fromMap' = ${pair[1]} and ${worldEvents.payload}->>'toMap' = ${pair[0]})`)).limit(1);
+  const target=outside[hash(`${playerId}:${regionId}:${grade}`)%outside.length]!;const pair=[reach.origin.id,target.id].sort();
+  const existing=await db.select({id:worldEvents.id}).from(worldEvents).where(and(eq(worldEvents.type,'MAP_LINKED'),sql`((${worldEvents.payload}->>'fromMap' = ${pair[0]} and ${worldEvents.payload}->>'toMap' = ${pair[1]}) or (${worldEvents.payload}->>'fromMap' = ${pair[1]} and ${worldEvents.payload}->>'toMap' = ${pair[0]}))`)).limit(1);
   if(existing.length)return null;
   await db.insert(worldEvents).values({type:'MAP_LINKED',actorId:playerId,locationId:null,payload:{fromMap:reach.origin.id,toMap:target.id,fromName:reach.origin.name,toName:target.name,regionId,grade}});
   await db.insert(importantHistory).values({type:'MAP_LINKED',summary:`${reach.origin.name} established contact with ${target.name}.`,payload:{fromMap:reach.origin.id,toMap:target.id,regionId,grade}});
@@ -86,8 +85,11 @@ export async function relationshipSnapshot(playerId:string,npcId:string){
   const interactions=rows.filter(row=>row.type==='PLAYER_ASKED_QUESTION').length;const maintenance=rows.filter(row=>row.type==='RELATIONSHIP_MAINTAINED').length;
   const last=rows[0]?.createdAt??null;const ageDays=last?Math.max(0,(Date.now()-last.getTime())/86400000):999;
   const rawFamiliarity=Math.min(100,interactions*9+maintenance*24);const rawTrust=Math.min(100,interactions*3+maintenance*18);const established=maintenance>=3||rawTrust>=58||rawFamiliarity>=72;
-  const familiarityFloor=established?34:0,trustFloor=established?24:0;const familiarity=Math.max(familiarityFloor,Math.round(rawFamiliarity-ageDays*(established?.65:3.8)));const trust=Math.max(trustFloor,Math.round(rawTrust-ageDays*(established?.3:1.2)));const obligation=Math.min(100,maintenance*10);
-  const level=relationshipLevel(familiarity,trust,established);const needsAttention=!['ENTRENCHED'].includes(level)&&(ageDays>2||level==='STRANGER'||level==='RECOGNISES');
+  const familiarityFloor=established?34:0,trustFloor=established?24:0;
+  const familiarity=Math.max(familiarityFloor,Math.round(rawFamiliarity-ageDays*(established?.65:3.8)));
+  const trust=Math.max(trustFloor,Math.round(rawTrust-ageDays*(established?.3:1.2)));
+  const obligation=Math.min(100,maintenance*10);const level=relationshipLevel(familiarity,trust,established);
+  const needsAttention=level!=='ENTRENCHED'&&(ageDays>2||level==='STRANGER'||level==='RECOGNISES');
   return {npcId,npcName:npc.name,level,familiarity,trust,obligation,established,lastInteractionAt:last?.toISOString()??null,needsAttention,maintenanceTask:needsAttention?maintenanceTask(playerId,npcId):null} satisfies RelationshipView;
 }
 
