@@ -21,9 +21,11 @@ export interface GameRepository {
   getActor(id:string): Promise<ActorView>;
   getLocationName(id:string): Promise<string>;
   listLocationEntities(locationId:string): Promise<EntityView[]>;
+  listPlayerLocationEntities(playerId:string): Promise<EntityView[]>;
   listAccessibleEntities(playerId:string): Promise<EntityView[]>;
   listLocationExits(locationId:string): Promise<LocationExitView[]>;
   findVisibleEntity(locationId:string, query:string): Promise<EntityView|undefined>;
+  findPlayerVisibleEntity(playerId:string, query:string): Promise<EntityView|undefined>;
   findAccessibleEntity(playerId:string, query:string): Promise<EntityView|undefined>;
   getPreviousLocation(playerId:string): Promise<{id:string;name:string}|null>;
   movePlayer(playerId:string, destination:string): Promise<MoveResult|null>;
