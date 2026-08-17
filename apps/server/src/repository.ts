@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { ActorView, EntityView, GameEvent, GameRepository, LocationExitView } from '@unintended/game-core';
 import { buildWorld, DEFAULT_WORLD_SEED, detectAnomalyCandidates } from '@unintended/world-data';
 import { db } from './db/index.js';
 import { anomalyClaimsV2, anomalyOwners, characters, entities, locations, npcState, playerConcepts, worldEvents, importantHistory } from './db/schema.js';
 import { getPlayerProgress, recordActionUnderstanding, registerFailure, registerQuestion, registerSemanticProbe } from './progression.js';
-import { relationshipSnapshot } from './social.js';
+import { originForPlayer, relationshipSnapshot } from './social.js';
 
 const worldSeed=Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED);
 const world=buildWorld(worldSeed);
@@ -17,6 +18,10 @@ const cleanDestination=(value:string)=>normalise(value)
   .trim();
 const cleanEntity=(value:string)=>normalise(value).replace(/^(please\s+)?(the|a|an)\s+/,'').trim();
 
+function itemView(item:typeof entities.$inferSelect,held=false):EntityView{
+ return {id:item.id,name:item.name,kind:item.kind as EntityView['kind'],locationId:item.locationId??undefined,portable:item.portable,openable:item.openable,open:item.open,held,facts:held?[`${item.name} is in your possession.`,'Possession has made it easier to inspect, not necessarily easier to understand.',...(item.openable?[item.open?'It is open.':'It appears capable of opening.']:[])]:[`${item.name} is here.`,item.portable?'It looks movable.':'It does not look conveniently movable.',...(item.openable?[item.open?'It is open.':'It appears capable of opening.']:[])]};
+}
+
 export class PostgresGameRepository implements GameRepository {
  async getActor(id:string):Promise<ActorView>{
   const [character]=await db.select().from(characters).where(eq(characters.id,id));if(!character)throw new Error('Player not found');
@@ -25,22 +30,26 @@ export class PostgresGameRepository implements GameRepository {
  }
  async getLocationName(id:string){const [location]=await db.select().from(locations).where(eq(locations.id,id));return location?.name??'NOWHERE';}
  async listLocationEntities(locationId:string):Promise<EntityView[]>{
-  const localItems=await db.select().from(entities).where(and(eq(entities.locationId,locationId),isNull(entities.ownerId)));
+  const legacyItems=await db.select().from(entities).where(and(eq(entities.locationId,locationId),isNull(entities.ownerId),isNull(entities.mapId)));
   const localNpcs=await db.select().from(npcState).where(eq(npcState.locationId,locationId));
-  return [
-   ...localItems.map(item=>({id:item.id,name:item.name,kind:item.kind as EntityView['kind'],locationId:item.locationId??undefined,portable:item.portable,openable:item.openable,open:item.open,facts:[`${item.name} is here.`,item.portable?'It looks movable.':'It does not look conveniently movable.',...(item.openable?[item.open?'It is open.':'It appears capable of opening.']:[])]})),
-   ...localNpcs.map(npc=>({id:npc.id,name:npc.name,kind:'NPC' as const,locationId:npc.locationId,facts:[`${npc.name} is here.`,npc.job==='unknown'?`${npc.name}'s occupation is not obvious.`:`${npc.name} appears to work as a ${npc.job}.`]}))
-  ];
+  return [...legacyItems.map(item=>itemView(item)),...localNpcs.map(npc=>({id:npc.id,name:npc.name,kind:'NPC' as const,locationId:npc.locationId,facts:[`${npc.name} is here.`,npc.job==='unknown'?`${npc.name}'s occupation is not obvious.`:`${npc.name} appears to work as a ${npc.job}.`]}))];
+ }
+ async listPlayerLocationEntities(playerId:string):Promise<EntityView[]>{
+  const actor=await this.getActor(playerId),mapId=originForPlayer(playerId).id;
+  const localItems=await db.select().from(entities).where(and(eq(entities.locationId,actor.locationId),eq(entities.mapId,mapId),isNull(entities.ownerId)));
+  const localNpcs=await db.select().from(npcState).where(eq(npcState.locationId,actor.locationId));
+  return [...localItems.map(item=>itemView(item)),...localNpcs.map(npc=>({id:npc.id,name:npc.name,kind:'NPC' as const,locationId:npc.locationId,facts:[`${npc.name} is here.`,npc.job==='unknown'?`${npc.name}'s occupation is not obvious.`:`${npc.name} appears to work as a ${npc.job}.`]}))];
  }
  async listAccessibleEntities(playerId:string):Promise<EntityView[]>{
-  const actor=await this.getActor(playerId);const local=await this.listLocationEntities(actor.locationId);const held=await db.select().from(entities).where(eq(entities.ownerId,playerId));
-  return [...local,...held.map(item=>({id:item.id,name:item.name,kind:item.kind as EntityView['kind'],portable:item.portable,openable:item.openable,open:item.open,held:true,facts:[`${item.name} is in your possession.`,'Possession has made it easier to inspect, not necessarily easier to understand.',...(item.openable?[item.open?'It is open.':'It appears capable of opening.']:[])]}))];
+  const local=await this.listPlayerLocationEntities(playerId);const held=await db.select().from(entities).where(eq(entities.ownerId,playerId));
+  return [...local,...held.map(item=>itemView(item,true))];
  }
  async listLocationExits(locationId:string):Promise<LocationExitView[]>{
   const [location]=await db.select().from(locations).where(eq(locations.id,locationId));if(!location)return [];
   const result:LocationExitView[]=[];for(const [directionKey,destinationId] of Object.entries(location.exits)){const direction=directionByKey.get(directionKey);if(!direction)continue;const [destination]=await db.select().from(locations).where(eq(locations.id,destinationId));result.push({directionKey,shape:direction.shape,label:direction.label,destinationId,destinationName:destination?.name});}return result;
  }
  async findVisibleEntity(locationId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listLocationEntities(locationId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
+ async findPlayerVisibleEntity(playerId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listPlayerLocationEntities(playerId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
  async findAccessibleEntity(playerId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listAccessibleEntities(playerId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
  async getPreviousLocation(playerId:string){
   const rows=await db.select({payload:worldEvents.payload}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),eq(worldEvents.type,'PLAYER_MOVED'))).orderBy(desc(worldEvents.createdAt)).limit(1);
@@ -54,10 +63,14 @@ export class PostgresGameRepository implements GameRepository {
   if(!targetId)return null;const [to]=await db.select().from(locations).where(eq(locations.id,targetId));if(!to)return null;await db.update(characters).set({locationId:to.id}).where(eq(characters.id,playerId));return {from:character.locationId,to:to.id,toName:to.name,directionKey:matchedDirection};
  }
  async takeItem(playerId:string,itemId:string){
-  const legacy=await db.select().from(anomalyOwners).where(and(eq(anomalyOwners.playerId,playerId),eq(anomalyOwners.anomalyId,'ownership-after-open')));const claims=await db.select({exception:anomalyClaimsV2.exception}).from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));const canCarryAwkward=legacy.length>0||claims.some(row=>(row.exception as any)?.primitive==='CARRY_AWKWARD');const condition=canCarryAwkward?and(eq(entities.id,itemId),isNull(entities.ownerId)):and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));const [updated]=await db.update(entities).set({ownerId:playerId,locationId:null}).where(condition).returning({id:entities.id});return !!updated;
+  const legacy=await db.select().from(anomalyOwners).where(and(eq(anomalyOwners.playerId,playerId),eq(anomalyOwners.anomalyId,'ownership-after-open')));const claims=await db.select({exception:anomalyClaimsV2.exception}).from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));const canCarryAwkward=legacy.length>0||claims.some(row=>(row.exception as any)?.primitive==='CARRY_AWKWARD');
+  const [item]=await db.select().from(entities).where(eq(entities.id,itemId));if(!item)return false;const mapId=originForPlayer(playerId).id;if(item.mapId&&item.mapId!==mapId)return false;
+  const condition=canCarryAwkward?and(eq(entities.id,itemId),isNull(entities.ownerId)):and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));const [updated]=await db.update(entities).set({ownerId:playerId,locationId:null}).where(condition).returning();if(!updated)return false;
+  if(updated.replenishes&&updated.mapId&&updated.templateId){const spawnLocation=(updated.data as Record<string,unknown>)?.spawnLocationId;await db.insert(entities).values({id:`${updated.mapId}:${updated.templateId}:r:${randomUUID()}`,name:updated.name,kind:updated.kind,mapId:updated.mapId,templateId:updated.templateId,locationId:typeof spawnLocation==='string'?spawnLocation:item.locationId,ownerId:null,portable:updated.portable,openable:updated.openable,open:false,replenishes:true,data:{...(updated.data as Record<string,unknown>),replacement:true}});}
+  return true;
  }
- async dropItem(playerId:string,itemIdOrName:string){const [character]=await db.select().from(characters).where(eq(characters.id,playerId));if(!character)return null;const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=cleanEntity(itemIdOrName);const item=owned.find(row=>row.id===itemIdOrName||normalise(row.name)===q||normalise(row.name).includes(q));if(!item)return null;await db.update(entities).set({ownerId:null,locationId:character.locationId}).where(eq(entities.id,item.id));return {id:item.id,name:item.name};}
- async openEntity(_playerId:string,entityId:string){const [updated]=await db.update(entities).set({open:true}).where(and(eq(entities.id,entityId),eq(entities.openable,true),eq(entities.open,false))).returning({id:entities.id});return !!updated;}
+ async dropItem(playerId:string,itemIdOrName:string){const [character]=await db.select().from(characters).where(eq(characters.id,playerId));if(!character)return null;const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=cleanEntity(itemIdOrName);const item=owned.find(row=>row.id===itemIdOrName||normalise(row.name)===q||normalise(row.name).includes(q));if(!item)return null;await db.update(entities).set({ownerId:null,locationId:character.locationId,mapId:item.mapId??originForPlayer(playerId).id}).where(eq(entities.id,item.id));return {id:item.id,name:item.name};}
+ async openEntity(playerId:string,entityId:string){const mapId=originForPlayer(playerId).id;const [entity]=await db.select().from(entities).where(eq(entities.id,entityId));if(!entity||entity.ownerId!==playerId&&entity.mapId!==mapId)return false;const [updated]=await db.update(entities).set({open:true}).where(and(eq(entities.id,entityId),eq(entities.openable,true),eq(entities.open,false))).returning({id:entities.id});return !!updated;}
  async maintainRelationship(playerId:string,npcId:string){
   const actor=await this.getActor(playerId);const [npc]=await db.select().from(npcState).where(and(eq(npcState.id,npcId),eq(npcState.locationId,actor.locationId)));if(!npc)return null;
   const before=await relationshipSnapshot(playerId,npcId);const task=before?.maintenanceTask??'Help with something routine and mildly inconvenient.';
