@@ -1,7 +1,7 @@
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { incidentAlias } from '@unintended/game-core';
 import { db } from './db/index.js';
-import { characters, playerProgress, serverEventUsage, worldEvents, worldFlags } from './db/schema.js';
+import { characters, importantHistory, playerProgress, serverEventUsage, worldEvents, worldFlags } from './db/schema.js';
 import { originForPlayer } from './social.js';
 import { recordAliasAttempt } from './diary.js';
 
@@ -21,6 +21,7 @@ export async function runServerFacility(playerId:string,facility:string,arg=''){
   outcome='READ ONLY';reward='Curated diagnostics';lines=['SERVER STATUS',`Map integrity: ${tier>=3?'questionable':'acceptable'}`,`Administrative confidence: ${Math.max(3,82-tier*7)}%`,`Pending contradictions: ${Math.max(1,tier+2)}`,'Actual infrastructure details: withheld for once sensible reasons.'];
  }else if(facility==='LOG'){
   const rows=await db.select().from(serverEventUsage).orderBy(desc(serverEventUsage.createdAt)).limit(5);outcome='READ ONLY';reward='Recent incident aliases';lines=['SERVER LOG / SANITISED','',...(rows.length?rows.map(row=>`${row.incidentAlias} · ${row.event}`):['No incidents have admitted responsibility yet.'])];
+  if(tier>=4){const artifactRows=await db.select().from(importantHistory).where(inArray(importantHistory.type,['HUNTED_ARTIFACT_SURFACED','ARTIFACT_CUSTODY_CHANGED','ULTRA_MYTHIC_SURFACED','ULTRA_MYTHIC_DISCOVERED'])).orderBy(desc(importantHistory.createdAt)).limit(2);if(artifactRows.length){lines.push('','RESTRICTED PROPERTY TRACES');for(const row of artifactRows){const payload=(row.payload??{}) as Record<string,unknown>,item=typeof payload.itemName==='string'?payload.itemName:typeof payload.templateId==='string'?'classified artifact':'unclassified object';lines.push(`${item} · ${row.type.replace(/_/g,' ').toLowerCase()}`);}lines.push('Location and current custodian withheld. Apparently one department still understands discretion.');}}
  }else if(facility==='HELP'){
   outcome='UNHELPFUL';reward='A technically valid clue';lines=['SERVER FACILITIES','STATUS and LOG appear to be read-only.','Some environmental requests are processed locally.','DOORS and TIME have legal representation.'];
  }else if(['BELL','BIRDS'].includes(facility)){
