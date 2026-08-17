@@ -22,6 +22,10 @@ try{
  console.log('Largest tables:');
  for(const row of sizes.rows.slice(0,12)){const mb=Number(row.bytes)/(1024*1024),warning=mb>=WARN_MB?'  REVIEW':'';console.log(`  ${String(row.table_name).padEnd(24)} ${mb.toFixed(2).padStart(9)} MB  ~${row.estimated_rows} rows${warning}`);}
 
+ const expiredLoans=await scalar(`SELECT count(*) FROM entities WHERE data ? 'loanDueAt' AND (data->>'loanDueAt')::timestamptz <= now() AND data ? 'loanedFrom'`);
+ console.log(`${APPLY?'APPLY':'DRY'} expired artifact loans: ${expiredLoans} candidate row${expiredLoans===1?'':'s'}`);
+ if(APPLY&&expiredLoans)await pool.query(`UPDATE entities SET owner_id=(data->>'loanedFrom')::uuid,updated_at=now(),data=data-'loanDueAt'-'loanedFrom'-'loanedTo' WHERE data ? 'loanDueAt' AND (data->>'loanDueAt')::timestamptz <= now() AND data ? 'loanedFrom'`);
+
  await remove(
   'surplus unowned replenishable evidence',
   `WITH ranked AS (
