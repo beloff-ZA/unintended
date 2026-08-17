@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import { actionCatalogStats, applyUnderstandingEvidence, assessRetainableException, buildAdventure, buildWorld, EMPTY_UNDERSTANDING, journeyFor, mapIdentityForMapId } from '@unintended/world-data';
+import { actionCatalogStats, applyUnderstandingEvidence, assessRetainableException, buildAdventure, buildWorld, EMPTY_UNDERSTANDING, journeyFor, mapCultureVersionCounts, mapIdentityForMapId, mapVersionCount, mapVersionForMapId } from '@unintended/world-data';
 import { parseCommand, resolveSemanticInput } from '../commands/parser.js';
 import { incidentAlias } from '../systems/announcements.js';
 
@@ -16,12 +16,19 @@ describe('world simulation',()=>{
 });
 
 describe('investigation journeys',()=>{
- it('requires relevant evidence before investigation becomes more than wandering',()=>{const map='map-1';expect(journeyFor(map,{visited:1,questions:0,handledEvidence:false,interference:false,anomalyCount:0,serverProbes:0}).stage).toBe('ARRIVAL');expect(journeyFor(map,{visited:3,questions:2,handledEvidence:false,interference:false,anomalyCount:0,serverProbes:0}).stage).toBe('DOUBT');expect(journeyFor(map,{visited:3,questions:2,handledEvidence:true,interference:false,anomalyCount:0,serverProbes:0}).stage).toBe('INVESTIGATION');expect(journeyFor(map,{visited:4,questions:3,handledEvidence:true,interference:true,anomalyCount:1,serverProbes:0}).stage).toBe('AFTERMATH');});
+ it('moves from arrival to aftermath through evidence rather than visible quest counts',()=>{const map='map-1';expect(journeyFor(map,{visited:1,questions:0,handledEvidence:false,interference:false,anomalyCount:0,serverProbes:0}).stage).toBe('ARRIVAL');expect(journeyFor(map,{visited:3,questions:2,handledEvidence:true,interference:false,anomalyCount:0,serverProbes:0}).stage).toBe('INVESTIGATION');expect(journeyFor(map,{visited:4,questions:3,handledEvidence:true,interference:true,anomalyCount:1,serverProbes:0}).stage).toBe('AFTERMATH');});
  it('gives the six map cultures distinct unresolved questions',()=>{const byArchetype=new Map<string,string>();for(let i=1;i<=24;i+=1){const map=`map-${i}`,identity=mapIdentityForMapId(map),journey=journeyFor(map,{visited:3,questions:2,handledEvidence:true,interference:false,anomalyCount:0,serverProbes:0});if(!byArchetype.has(identity.archetypeId))byArchetype.set(identity.archetypeId,journey.nextQuestion);}expect(byArchetype.size).toBe(6);expect(new Set(byArchetype.values()).size).toBe(6);});
 });
 
+describe('multiversal map versions',()=>{
+ it('provides four substantial versions for each of six cultures',()=>{expect(mapVersionCount()).toBe(24);const counts=mapCultureVersionCounts();expect(Object.keys(counts)).toHaveLength(6);for(const count of Object.values(counts))expect(count).toBe(4);});
+ it('gives all 24 current maps a unique version identity',()=>{const ids=Array.from({length:24},(_,i)=>mapVersionForMapId(`map-${i+1}`).id);expect(new Set(ids).size).toBe(24);});
+ it('supports both institutional and curiosity-led travel hooks',()=>{for(let i=1;i<=24;i+=1){const version=mapVersionForMapId(`map-${i}`);expect(version.questLead.length).toBeGreaterThan(20);expect(version.curiosityLead.length).toBeGreaterThan(20);expect(version.foreignArchetypes.length).toBeGreaterThan(0);expect(version.approaches).toHaveLength(3);expect(version.consequences).toHaveLength(3);}});
+});
+
 describe('progression safeguards',()=>{
- it('rewards varied context more than repetition',()=>{const first=applyUnderstandingEvidence(EMPTY_UNDERSTANDING,{actionId:'LOOK',contextKey:'room:a',success:true,distinctContextOrdinal:1});const second=applyUnderstandingEvidence(first,{actionId:'LOOK',contextKey:'room:b',success:true,distinctContextOrdinal:2});const firstGain=first.perception,secondGain=second.perception-first.perception;expect(firstGain).toBeGreaterThan(secondGain);expect(secondGain).toBeGreaterThan(0);});
+ it('rewards varied context more than repetition',()=>{const first=applyUnderstandingEvidence(EMPTY_UNDERSTANDING,{actionId:'LOOK',contextKey:'room:a',success:true,distinctContextOrdinal:1,contextRepeatOrdinal:1});const repeated=applyUnderstandingEvidence(first,{actionId:'LOOK',contextKey:'room:a',success:true,distinctContextOrdinal:1,contextRepeatOrdinal:2});const varied=applyUnderstandingEvidence(first,{actionId:'LOOK',contextKey:'room:b',success:true,distinctContextOrdinal:2,contextRepeatOrdinal:1});expect(varied.perception-first.perception).toBeGreaterThan(repeated.perception-first.perception);});
+ it('nearly exhausts a repeatedly farmed context',()=>{let state=EMPTY_UNDERSTANDING;const gains:number[]=[];for(let i=1;i<=5;i+=1){const before=state.perception;state=applyUnderstandingEvidence(state,{actionId:'LOOK',contextKey:'same-room',success:true,distinctContextOrdinal:1,contextRepeatOrdinal:i});gains.push(state.perception-before);}expect(gains[0]).toBeGreaterThan(gains[1]!);expect(gains[1]).toBeGreaterThan(gains[2]!);expect(gains[4]!).toBeLessThan(gains[0]!*0.02);});
  it('keeps the authored ontology broad without exact surface collisions',()=>{const stats=actionCatalogStats();expect(stats.actions).toBeGreaterThan(100);expect(stats.surfaces).toBeGreaterThan(stats.actions);expect(stats.exactSurfaceCollisions).toBe(0);});
 });
 
