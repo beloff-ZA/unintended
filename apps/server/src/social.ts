@@ -69,18 +69,26 @@ export async function maybeLinkMapForProgress(playerId:string,regionId:string,gr
 function relationshipLevel(familiarity:number,trust:number,established:boolean){const score=familiarity*.65+trust*.35;if(established&&score>=82)return 'ENTRENCHED';if(score>=64)return 'TRUSTED';if(score>=44)return 'KNOWN';if(score>=24)return 'FAMILIAR';if(score>=8)return 'RECOGNISES';return 'STRANGER';}
 function maintenanceTask(playerId:string,npcId:string){const day=Math.floor(Date.now()/86400000);return TASKS[hash(`${seed}:${playerId}:${npcId}:${day}`)%TASKS.length]!;}
 
-export async function relationshipSnapshot(playerId:string,npcId:string){
+export async function relationshipSnapshot(playerId:string,npcId:string):Promise<RelationshipView|null>{
   const [npc]=await db.select().from(npcState).where(eq(npcState.id,npcId));if(!npc)return null;
   const rows=await db.select({type:worldEvents.type,createdAt:worldEvents.createdAt}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),eq(worldEvents.targetId,npcId),inArray(worldEvents.type,['PLAYER_ASKED_QUESTION','RELATIONSHIP_MAINTAINED']))).orderBy(desc(worldEvents.createdAt));
   const interactions=rows.filter(row=>row.type==='PLAYER_ASKED_QUESTION').length,maintenance=rows.filter(row=>row.type==='RELATIONSHIP_MAINTAINED').length,last=rows[0]?.createdAt??null,ageDays=last?Math.max(0,(Date.now()-last.getTime())/86400000):999;
   const rawFamiliarity=Math.min(100,interactions*9+maintenance*24),rawTrust=Math.min(100,interactions*3+maintenance*18),established=maintenance>=3||rawTrust>=58||rawFamiliarity>=72;
   const familiarityFloor=established?34:0,trustFloor=established?24:0,familiarity=Math.max(familiarityFloor,Math.round(rawFamiliarity-ageDays*(established?0.65:3.8))),trust=Math.max(trustFloor,Math.round(rawTrust-ageDays*(established?0.3:1.2))),obligation=Math.min(100,maintenance*10),level=relationshipLevel(familiarity,trust,established);
-  const needsAttention=level!=='ENTRENCHED'&&(ageDays>2||level==='STRANGER'||level==='RECOGNISES');return {npcId,npcName:npc.name,level,familiarity,trust,obligation,established,lastInteractionAt:last?.toISOString()??null,needsAttention,maintenanceTask:needsAttention?maintenanceTask(playerId,npcId):null} satisfies RelationshipView;
+  const needsAttention=level!=='ENTRENCHED'&&(ageDays>2||level==='STRANGER'||level==='RECOGNISES');
+  const lastInteractionAt:string|null=last?last.toISOString():null;
+  return {npcId,npcName:npc.name,level,familiarity,trust,obligation,established,lastInteractionAt,needsAttention,maintenanceTask:needsAttention?maintenanceTask(playerId,npcId):null};
 }
 
-export async function relationshipsForPlayer(playerId:string){
+export async function relationshipsForPlayer(playerId:string):Promise<RelationshipView[]>{
   const targets=await db.selectDistinct({targetId:worldEvents.targetId}).from(worldEvents).where(and(eq(worldEvents.actorId,playerId),inArray(worldEvents.type,['PLAYER_ASKED_QUESTION','RELATIONSHIP_MAINTAINED']),sql`${worldEvents.targetId} is not null`));
-  const values=await Promise.all(targets.map(row=>row.targetId?relationshipSnapshot(playerId,row.targetId):null));return values.filter((value):value is RelationshipView=>!!value);
+  const relationships:RelationshipView[]=[];
+  for(const row of targets){
+    if(!row.targetId)continue;
+    const relationship=await relationshipSnapshot(playerId,row.targetId);
+    if(relationship)relationships.push(relationship);
+  }
+  return relationships;
 }
 
 export async function returnRecap(playerId:string,relationships:RelationshipView[]){
