@@ -43,7 +43,6 @@ async function eligible(input:{mode:TransferMode;item:EntityRow;from:string;to:s
   if(input.mode==='TRADE')return {ok:fromTier>=2&&toTier>=2,reason:'RESISTS',cls} as const;
   const victimOnline=await redis.get(`presence:${input.to}`);return {ok:fromTier>=3&&fromAnomalies>=2&&toTier>=2&&!!victimOnline,reason:'RESISTS',cls} as const;
  }
- // CONTESTED. These are deliberately asymmetric. The unfairer the change, the more history must already exist.
  if(input.mode==='GIVE')return {ok:fromTier>=4&&toTier>=4&&toAnomalies>=3,reason:'RESISTS',cls} as const;
  if(input.mode==='LEND')return {ok:fromTier>=4&&toTier>=3&&toAnomalies>=2,reason:'RESISTS',cls} as const;
  if(input.mode==='TRADE')return {ok:fromTier>=5&&toTier>=5&&fromAnomalies>=4&&toAnomalies>=4,reason:'RESISTS',cls} as const;
@@ -53,6 +52,8 @@ async function eligible(input:{mode:TransferMode;item:EntityRow;from:string;to:s
 
 async function itemOwnedBy(playerId:string,itemText:string){const rows=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=itemText.trim().toLowerCase();return rows.find(row=>row.name.toLowerCase()===q)||rows.find(row=>row.name.toLowerCase().includes(q));}
 export async function resolvePlayerAtSamePlace(actorId:string,name:string){const [actor]=await db.select().from(characters).where(eq(characters.id,actorId));if(!actor)return null;const rows=await db.select().from(characters).where(eq(characters.locationId,actor.locationId));const q=name.trim().toLowerCase();const matches=rows.filter(row=>row.id!==actorId&&originForPlayer(row.id).id===originForPlayer(actorId).id&&(row.name.toLowerCase()===q||row.name.toLowerCase().includes(q)));for(const row of matches)if(await redis.get(`presence:${row.id}`))return row;return null;}
+
+export async function guardDrop(playerId:string,itemText:string){const item=await itemOwnedBy(playerId,itemText);if(!item)return null;const cls=custodyClassFor(item),data=dataOf(item);if(cls==='BOUND')return [`The ${item.name} does not accept being made ownerless.`,`This appears to be a property of the object rather than your wording.`];if(typeof data.loanedFrom==='string'&&data.loanedFrom!==playerId)return [`The ${item.name} is currently borrowed.`,`Apparently even impossible property law has a concept of returning library books.`];return null;}
 
 async function recordChange(mode:TransferMode,item:EntityRow,from:string,to:string){
  await db.insert(worldEvents).values({type:'ITEM_TRANSFERRED',actorId:from,targetId:item.id,locationId:null,payload:{mode,fromPlayerId:from,toPlayerId:to,custodyClass:custodyClassFor(item)}});
