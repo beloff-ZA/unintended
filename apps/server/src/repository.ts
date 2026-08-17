@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull } from 'drizzle-orm';
+import { anomalyAlias } from '@unintended/game-core';
 import type { ActorView, EntityView, GameEvent, GameRepository, LocationExitView } from '@unintended/game-core';
-import { buildWorld, DEFAULT_WORLD_SEED, detectAnomalyCandidates } from '@unintended/world-data';
+import { buildWorld, DEFAULT_WORLD_SEED, detectAnomalyAttempts, detectAnomalyCandidates } from '@unintended/world-data';
 import { db } from './db/index.js';
 import { anomalyClaimsV2, anomalyOwners, characters, entities, locations, npcState, playerConcepts, worldEvents, importantHistory } from './db/schema.js';
 import { getPlayerProgress, recordActionUnderstanding, registerFailure, registerQuestion, registerSemanticProbe } from './progression.js';
 import { originForPlayer, relationshipSnapshot } from './social.js';
+import { DIARY_TEMPLATE_ID, maybeSurfaceDiary, recordAliasAttempt, recordDiaryDiscovery } from './diary.js';
 
 const worldSeed=Number(process.env.WORLD_SEED??DEFAULT_WORLD_SEED);
 const world=buildWorld(worldSeed);
@@ -46,8 +48,7 @@ export class PostgresGameRepository implements GameRepository {
   return [...local,...held.map(item=>itemView(item,true))];
  }
  async listLocationExits(locationId:string):Promise<LocationExitView[]>{
-  const [location]=await db.select().from(locations).where(eq(locations.id,locationId));if(!location)return [];
-  const result:LocationExitView[]=[];for(const [directionKey,destinationId] of Object.entries(location.exits)){const direction=directionByKey.get(directionKey);if(!direction)continue;const [destination]=await db.select().from(locations).where(eq(locations.id,destinationId));result.push({directionKey,shape:direction.shape,label:direction.label,destinationId,destinationName:destination?.name});}return result;
+  const [location]=await db.select().from(locations).where(eq(locations.id,id));return location?.name??'NOWHERE';
  }
  async findVisibleEntity(locationId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listLocationEntities(locationId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
  async findPlayerVisibleEntity(playerId:string,query:string){const q=cleanEntity(query);if(!q)return undefined;const list=await this.listPlayerLocationEntities(playerId);return list.find(entity=>normalise(entity.name)===q)||list.find(entity=>normalise(entity.name).includes(q)||q.includes(normalise(entity.name)));}
@@ -68,6 +69,7 @@ export class PostgresGameRepository implements GameRepository {
   const [item]=await db.select().from(entities).where(eq(entities.id,itemId));if(!item)return false;const mapId=originForPlayer(playerId).id;if(item.mapId&&item.mapId!==mapId)return false;
   const condition=canCarryAwkward?and(eq(entities.id,itemId),isNull(entities.ownerId)):and(eq(entities.id,itemId),isNull(entities.ownerId),eq(entities.portable,true));const [updated]=await db.update(entities).set({ownerId:playerId,locationId:null,updatedAt:new Date()}).where(condition).returning();if(!updated)return false;
   if(updated.replenishes&&updated.mapId&&updated.templateId){const spawnLocation=(updated.data as Record<string,unknown>)?.spawnLocationId;await db.insert(entities).values({id:`${updated.mapId}:${updated.templateId}:r:${randomUUID()}`,name:updated.name,kind:updated.kind,mapId:updated.mapId,templateId:updated.templateId,locationId:typeof spawnLocation==='string'?spawnLocation:item.locationId,ownerId:null,portable:updated.portable,openable:updated.openable,open:false,replenishes:true,data:{...(updated.data as Record<string,unknown>),replacement:true}});}
+  if(updated.templateId===DIARY_TEMPLATE_ID)await recordDiaryDiscovery(playerId,updated.id,'TAKE DIARY OF THE UNINTENDED');
   return true;
  }
  async dropItem(playerId:string,itemIdOrName:string){const [character]=await db.select().from(characters).where(eq(characters.id,playerId));if(!character)return null;const owned=await db.select().from(entities).where(eq(entities.ownerId,playerId));const q=cleanEntity(itemIdOrName);const item=owned.find(row=>row.id===itemIdOrName||normalise(row.name)===q||normalise(row.name).includes(q));if(!item)return null;await db.update(entities).set({ownerId:null,locationId:character.locationId,mapId:item.mapId??originForPlayer(playerId).id,updatedAt:new Date()}).where(eq(entities.id,item.id));return {id:item.id,name:item.name};}
@@ -88,8 +90,10 @@ export class PostgresGameRepository implements GameRepository {
   if(!events.length)return {};
   const history=await db.select({type:worldEvents.type,targetId:worldEvents.targetId,locationId:worldEvents.locationId,payload:worldEvents.payload}).from(worldEvents).where(eq(worldEvents.actorId,playerId)).orderBy(desc(worldEvents.createdAt)).limit(6);
   const recent=[...history.reverse().map(row=>({type:row.type,targetId:row.targetId??undefined,locationId:row.locationId??undefined,payload:(row.payload??{}) as Record<string,unknown>})),...events.map(event=>({type:event.type,targetId:event.targetId,locationId:event.locationId,payload:event.payload}))];
-  const progress=await getPlayerProgress(playerId);const candidates=detectAnomalyCandidates(worldSeed,recent,progress.hiddenTier).filter(candidate=>candidate.variant%4===0);
-  for(const candidate of candidates){const exception={primitive:candidate.template.exception,domain:candidate.template.domain,antiAbuse:candidate.template.antiAbuse,apparentUtility:candidate.template.apparentUtility};const [claimed]=await db.insert(anomalyClaimsV2).values({instanceId:candidate.instanceId,templateId:candidate.template.id,variant:candidate.variant,worldSeed:String(worldSeed),playerId,exception,utility:candidate.template.utility}).onConflictDoNothing().returning({instanceId:anomalyClaimsV2.instanceId});if(!claimed)continue;await db.insert(importantHistory).values({type:'ANOMALY_DISCOVERED',summary:`A ${candidate.template.domain.toLowerCase()} contradiction was retained.`,payload:{instanceId:candidate.instanceId,templateId:candidate.template.id,playerId,exception:candidate.template.exception}});return {claimed:{id:candidate.instanceId,name:candidate.template.name},retained:[candidate.template.exception]};}
+  const progress=await getPlayerProgress(playerId),lastAction=events[events.length-1]?.type??'UNKNOWN';
+  const attempts=detectAnomalyAttempts(worldSeed,recent,progress.hiddenTier);if(attempts.length){const pick=attempts[(history.length+progress.hiddenTier+playerId.charCodeAt(0))%attempts.length]!;await recordAliasAttempt({alias:anomalyAlias({seed:worldSeed,templateId:pick.template.id}),templateId:pick.template.id,playerId,lastAction,outcome:'NO RETAINED EFFECT'});}
+  const candidates=detectAnomalyCandidates(worldSeed,recent,progress.hiddenTier).filter(candidate=>candidate.variant%4===0);
+  for(const candidate of candidates){const exception={primitive:candidate.template.exception,domain:candidate.template.domain,antiAbuse:candidate.template.antiAbuse,apparentUtility:candidate.template.apparentUtility};const [claimed]=await db.insert(anomalyClaimsV2).values({instanceId:candidate.instanceId,templateId:candidate.template.id,variant:candidate.variant,worldSeed:String(worldSeed),playerId,exception,utility:candidate.template.utility}).onConflictDoNothing().returning({instanceId:anomalyClaimsV2.instanceId});if(!claimed)continue;const alias=anomalyAlias({seed:worldSeed,templateId:candidate.template.id});await recordAliasAttempt({alias,templateId:candidate.template.id,playerId,lastAction,outcome:'RETAINED',reward:candidate.template.exception,discovered:true});await db.insert(importantHistory).values({type:'ANOMALY_DISCOVERED',summary:`${alias}: a ${candidate.template.domain.toLowerCase()} contradiction was retained.`,payload:{alias,instanceId:candidate.instanceId,templateId:candidate.template.id,playerId,exception:candidate.template.exception,lastAction}});await maybeSurfaceDiary(playerId,events[events.length-1]?.locationId??'bellweather-square');return {claimed:{id:candidate.instanceId,name:candidate.template.name},retained:[candidate.template.exception]};}
   return {};
  }
 }
