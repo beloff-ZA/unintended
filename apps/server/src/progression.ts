@@ -46,10 +46,17 @@ export async function registerFailure(playerId:string,family:string){
 
 export async function recordActionUnderstanding(playerId:string,actionId:string,contextKey:string,success:boolean,extras?:{anomaly?:boolean;thresholdGrade?:'BARE'|'COMPETENT'|'MASTERY'}){
   const state=await getPlayerProgress(playerId);const actionCounts={...state.actionCounts,[actionId]:(state.actionCounts[actionId]??0)+1};
-  const contextToken=`${actionId}:${contextKey}`;const contextCounts={...state.contextCounts,[contextToken]:(state.contextCounts[contextToken]??0)+1};
+  const contextToken=`${actionId}:${contextKey}`;const previousContextCount=state.contextCounts[contextToken]??0;
+  const contextCounts={...state.contextCounts,[contextToken]:previousContextCount+1};
+  let anomalyNoveltyOrdinal=1;
+  if(extras?.anomaly){
+    const anomalyToken=`ANOMALY:${contextKey}`,previousAnomaly=state.contextCounts[anomalyToken]??0;
+    contextCounts[anomalyToken]=previousAnomaly+1;
+    anomalyNoveltyOrdinal=Math.max(1,Object.keys(contextCounts).filter(key=>key.startsWith('ANOMALY:')).length);
+  }
   const distinctForAction=Object.keys(contextCounts).filter(key=>key.startsWith(`${actionId}:`)).length;
-  const understanding=applyUnderstandingEvidence(state.understanding,{actionId,contextKey,success,distinctContextOrdinal:Math.max(1,distinctForAction),anomaly:extras?.anomaly,thresholdGrade:extras?.thresholdGrade});
+  const understanding=applyUnderstandingEvidence(state.understanding,{actionId,contextKey,success,distinctContextOrdinal:Math.max(1,distinctForAction),contextRepeatOrdinal:previousContextCount+1,anomaly:extras?.anomaly,anomalyNoveltyOrdinal,thresholdGrade:extras?.thresholdGrade});
   const hiddenTier=hiddenUnderstandingTier(understanding);const currentTitle=titleFor(understanding,playerId);
-  await db.update(playerProgress).set({understanding,actionCounts,contextCounts:capRecord(contextCounts,256),hiddenTier,currentTitle,updatedAt:new Date()}).where(eq(playerProgress.playerId,playerId));
+  await db.update(playerProgress).set({understanding,actionCounts,contextCounts:capRecord(contextCounts,320),hiddenTier,currentTitle,updatedAt:new Date()}).where(eq(playerProgress.playerId,playerId));
   return {understanding,hiddenTier,currentTitle,titleChanged:currentTitle!==state.currentTitle,tierChanged:hiddenTier!==state.hiddenTier};
 }
