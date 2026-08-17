@@ -1,5 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
-import { ACTION_CATALOG, ANOMALY_TEMPLATES, buildWorld, DEFAULT_WORLD_SEED, journeyFor, type JourneyView } from '@unintended/world-data';
+import { ACTION_CATALOG, ANOMALY_TEMPLATES, buildWorld, DEFAULT_WORLD_SEED, journeyFor, journeyRelevantItemTemplates, type JourneyView } from '@unintended/world-data';
 import { db } from './db/index.js';
 import { anomalyClaimsV2, characters, entities, playerConcepts, worldEvents } from './db/schema.js';
 import { getPlayerProgress } from './progression.js';
@@ -50,20 +50,21 @@ export async function buildPlayerState(playerId:string){
  const concepts=await db.select().from(playerConcepts).where(eq(playerConcepts.playerId,playerId));
  const inventory=await db.select().from(entities).where(eq(entities.ownerId,playerId));
  const mapId=originForPlayer(playerId).id,available=await db.select({name:entities.name}).from(entities).where(and(eq(entities.mapId,mapId),eq(entities.locationId,character.locationId),isNull(entities.ownerId)));
- const history=await db.select({type:worldEvents.type,locationId:worldEvents.locationId,payload:worldEvents.payload}).from(worldEvents).where(eq(worldEvents.actorId,playerId));
+ const history=await db.select({type:worldEvents.type,targetId:worldEvents.targetId,locationId:worldEvents.locationId,payload:worldEvents.payload}).from(worldEvents).where(eq(worldEvents.actorId,playerId));
  const progress=await getPlayerProgress(playerId),assessment=await assessCurrentRegion(playerId),claims=await db.select().from(anomalyClaimsV2).where(eq(anomalyClaimsV2.playerId,playerId));
  const relationships=await relationshipsForPlayer(playerId),social=await socialReach(playerId),recap=await returnRecap(playerId,relationships),favour=await activeRelationshipTask(playerId);
- const visited=new Set<string>([character.locationId]),observed=new Set<string>();const traversed:Array<{from:string;to:string;directionKey?:string}>=[];
- let questions=0,handledEvidence=false,claimed=false,serverProbes=0;
+ const visited=new Set<string>([character.locationId]),observed=new Set<string>(),questionSignatures=new Set<string>(),relevantItems=new Set(journeyRelevantItemTemplates(mapId));const traversed:Array<{from:string;to:string;directionKey?:string}>=[];
+ let handledEvidence=false,interference=false,serverProbes=0;
  for(const event of history){
+  const payload=(event.payload??{}) as Record<string,unknown>;
   if(event.type==='PLAYER_LOOKED'&&event.locationId){observed.add(event.locationId);visited.add(event.locationId);}
-  if(event.type==='PLAYER_MOVED'&&event.locationId){visited.add(event.locationId);const payload=(event.payload??{}) as Record<string,unknown>;const from=typeof payload.from==='string'?payload.from:undefined;if(from){visited.add(from);traversed.push({from,to:event.locationId,directionKey:typeof payload.directionKey==='string'?payload.directionKey:undefined});}}
-  if(event.type==='PLAYER_ASKED_QUESTION')questions+=1;
-  if(event.type==='ITEM_TAKEN')handledEvidence=true;
-  if(event.type==='PLAYER_PROBED_CONCEPT'&&((event.payload??{}) as Record<string,unknown>).ownershipAssertion===true)claimed=true;
-  if(event.type==='SERVER_EVENT_TRIGGERED')serverProbes+=1;
+  if(event.type==='PLAYER_MOVED'&&event.locationId){visited.add(event.locationId);const from=typeof payload.from==='string'?payload.from:undefined;if(from){visited.add(from);traversed.push({from,to:event.locationId,directionKey:typeof payload.directionKey==='string'?payload.directionKey:undefined});}}
+  if(event.type==='PLAYER_ASKED_QUESTION'){const signature=typeof payload.signature==='string'?payload.signature:`q:${event.targetId??event.locationId??questionSignatures.size}`;questionSignatures.add(signature);}
+  if(event.type==='ITEM_TAKEN'&&event.targetId){const template=event.targetId.split(':').at(-1);if(template&&relevantItems.has(template))handledEvidence=true;}
+  if(event.type==='ITEM_DROPPED'||event.type==='ITEM_TRANSFERRED'||(event.type==='PLAYER_PROBED_CONCEPT'&&payload.ownershipAssertion===true))interference=true;
+  if(event.type==='SERVER_EVENT_TRIGGERED'){serverProbes+=1;interference=true;}
  }
- const journey=journeyFor(mapId,{visited:visited.size,questions,handledEvidence,claimed,anomalyCount:claims.length,serverProbes});
+ const journey=journeyFor(mapId,{visited:visited.size,questions:questionSignatures.size,handledEvidence,interference,anomalyCount:claims.length,serverProbes});
  const visibleIds=new Set<string>(visited);for(const locationId of observed){const location=worldLocationById.get(locationId);if(location)for(const targetId of Object.values(location.exits))visibleIds.add(targetId);}
  const nodes=[...visibleIds].map(id=>worldLocationById.get(id)).filter((location):location is NonNullable<typeof location>=>!!location).map(location=>({id:location.id,name:visited.has(location.id)?location.name:null,x:location.x,y:location.y,status:visited.has(location.id)?'visited':'inferred',current:location.id===character.locationId}));
  const edgeMap=new Map<string,{from:string;to:string;directionKey:string;shape:string;label:string;status:'known'|'inferred'}>();
@@ -75,8 +76,7 @@ export async function buildPlayerState(playerId:string){
  return {
   player:{id:character.id,name:character.name,locationId:character.locationId},knownConcepts,inventory:inventory.map(row=>({id:row.id,name:row.name})),
   actionCategories:[...actionCategories,'INQUIRY'],discoveredActions:knownConcepts.map(id=>id==='INQUIRE'?{id,category:'INQUIRY'}:(actionById.get(id)?{id,category:actionById.get(id)!.category}:undefined)).filter(Boolean),
-  progression:{title:progress.currentTitle,currentRegion:progress.currentRegion,assessment:assessment.assessment,grade:assessment.grade,goal:assessment.condition,goals:assessment.completedGoals,hint:assessment.hint,rewards:assessment.rewards,nextRegions:assessment.nextRegions},
-  journey,
+  progression:{title:progress.currentTitle,currentRegion:progress.currentRegion,assessment:assessment.assessment,grade:assessment.grade,goal:assessment.condition,goals:assessment.completedGoals,hint:assessment.hint,rewards:assessment.rewards,nextRegions:assessment.nextRegions},journey,
   assistance:{active:assistanceActive,title:'TEMPORARY ASSISTANCE',note:'These are examples of intentions, not the command list. Assistance is withdrawn after first proficiency.',suggestions:assistanceActive?starterAssistance(character.locationId,conceptSet,inventoryNames,availableNames):[]},
   anomalies:claims.map(claim=>{const template=anomalyById.get(claim.templateId);return{id:claim.instanceId,name:template?.name??'Retained Exception',domain:template?.domain??'UNKNOWN',apparentUtility:(claim.exception as any)?.apparentUtility??claim.utility};}),
   memory:{rememberedDirectionCount:directions.length,nodes,edges,directions},social:{...social,assignmentLines:['ORIGIN ASSIGNED',social.origin.name,'This is now considered where you are from.','No appeal process has been discovered.']},relationships,threads,returnRecap:recap
