@@ -99,3 +99,5 @@ At this stage the Worker is deliberately non-authoritative. No player inventory,
 Preview deployments are intentionally used to validate the Cloudflare runtime before production promotion.
 
 Build-trigger checkpoint: fresh Git commit after Cloudflare build settings were updated.
+
+Test trigger: verify Cloudflare consumes the current saved build configuration.
