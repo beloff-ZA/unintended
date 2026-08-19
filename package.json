@@ -5,7 +5,9 @@
   "packageManager": "pnpm@10.17.1",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
+    "dev:cloudflare": "pnpm --filter @unintended/server-worker cf:dev",
     "build": "pnpm -r build",
+    "build:cloudflare": "pnpm --filter @unintended/server-worker build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "db:generate": "pnpm --filter @unintended/server db:generate",
