@@ -4,19 +4,19 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-19",
   "vars": {
-    "DEPLOYMENT_ENV": "local"
+    "DEPLOYMENT_ENV": "production"
   },
   "env": {
+    "local": {
+      "name": "unintended-api-local",
+      "vars": {
+        "DEPLOYMENT_ENV": "local"
+      }
+    },
     "preview": {
       "name": "unintended-api-preview",
       "vars": {
         "DEPLOYMENT_ENV": "preview"
-      }
-    },
-    "production": {
-      "name": "unintended-api-production",
-      "vars": {
-        "DEPLOYMENT_ENV": "production"
       }
     }
   }
