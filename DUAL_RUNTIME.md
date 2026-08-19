@@ -97,3 +97,5 @@ Do not put secrets in `wrangler.jsonc`, `.env.example`, frontend Vite variables 
 At this stage the Worker is deliberately non-authoritative. No player inventory, ownership, anomaly discovery, world mutation or session state is processed by the Worker yet. This keeps the migration reversible while CI proves that the second runtime remains buildable.
 
 Preview deployments are intentionally used to validate the Cloudflare runtime before production promotion.
+
+Build-trigger checkpoint: fresh Git commit after Cloudflare build settings were updated.
