@@ -1,0 +1,21 @@
+{
+  "name": "@unintended/server-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cf:dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@unintended/game-core": "workspace:*",
+    "@unintended/shared": "workspace:*",
+    "@unintended/world-data": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "wrangler": "^4.0.0"
+  }
+}
