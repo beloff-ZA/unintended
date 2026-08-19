@@ -18,6 +18,12 @@
       "vars": {
         "DEPLOYMENT_ENV": "preview"
       }
+    },
+    "production": {
+      "name": "unintended-api",
+      "vars": {
+        "DEPLOYMENT_ENV": "production"
+      }
     }
   }
 }
