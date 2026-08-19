@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "unintended-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-19",
+  "vars": {
+    "DEPLOYMENT_ENV": "local"
+  },
+  "env": {
+    "preview": {
+      "name": "unintended-api-preview",
+      "vars": {
+        "DEPLOYMENT_ENV": "preview"
+      }
+    },
+    "production": {
+      "name": "unintended-api-production",
+      "vars": {
+        "DEPLOYMENT_ENV": "production"
+      }
+    }
+  }
+}
