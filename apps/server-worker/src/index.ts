@@ -27,6 +27,60 @@ const json = (body: unknown, init: ResponseInit = {}) =>
     },
   });
 
+const playPage = () => new Response(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>UNINTENDED</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0d0f0e;color:#e7e3d8}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#171b18 0,#0d0f0e 55%);display:grid;place-items:center;padding:24px}.shell{width:min(980px,100%);border:1px solid #3a403a;background:#111411;box-shadow:0 24px 80px #0008}.top{display:flex;justify-content:space-between;gap:20px;padding:18px 22px;border-bottom:1px solid #303630}.top h1{margin:0;font-size:18px;letter-spacing:.22em}.top small{color:#8f9b8f}.status{font-size:12px;color:#a7b6a7}.body{display:grid;grid-template-columns:minmax(0,1fr) 250px;min-height:620px}.terminal{display:flex;flex-direction:column;min-width:0}.output{flex:1;overflow:auto;padding:24px;white-space:pre-wrap;line-height:1.55;font-size:16px}.line.input{color:#9ab7ff}.line.error{color:#ffb2a8}.line.system{color:#9aa39a}.entry{display:flex;border-top:1px solid #303630;background:#0b0d0c}.entry span{padding:16px 0 16px 18px;color:#7f8f7f}.entry input{flex:1;border:0;background:transparent;color:#f3efe4;padding:16px 18px;font:inherit;font-size:16px;outline:none}.side{border-left:1px solid #303630;padding:20px;background:#0e110f}.side h2{margin:0 0 16px;font-size:12px;letter-spacing:.15em;color:#9aa39a}.location{font-size:18px;margin-bottom:18px}.exits{display:grid;gap:9px}.exits button,.reset{width:100%;text-align:left;border:1px solid #394039;background:#151916;color:#e7e3d8;padding:11px 12px;font:inherit;cursor:pointer}.exits button:hover,.reset:hover{background:#1d231e}.meta{margin-top:24px;font-size:12px;line-height:1.5;color:#899489}.reset{margin-top:18px;color:#c8b9a4}@media(max-width:760px){body{padding:0}.shell{min-height:100vh;border:0}.body{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid #303630;min-height:0}.output{min-height:52vh}}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="top"><div><h1>UNINTENDED</h1><small>Hosted development slice</small></div><div class="status" id="status">connecting</div></header>
+  <section class="body">
+    <div class="terminal">
+      <div class="output" id="output"></div>
+      <form class="entry" id="form"><span>&gt;</span><input id="input" autocomplete="off" maxlength="240" placeholder="Tell the world what you intend." autofocus /></form>
+    </div>
+    <aside class="side">
+      <h2>CURRENT CONTEXT</h2>
+      <div class="location" id="location">Unknown</div>
+      <div class="exits" id="exits"></div>
+      <button class="reset" id="reset">RESET LOCATION</button>
+      <div class="meta" id="meta"></div>
+    </aside>
+  </section>
+</main>
+<script>
+const output=document.getElementById('output');
+const form=document.getElementById('form');
+const input=document.getElementById('input');
+const locationEl=document.getElementById('location');
+const exitsEl=document.getElementById('exits');
+const statusEl=document.getElementById('status');
+const metaEl=document.getElementById('meta');
+const resetEl=document.getElementById('reset');
+let playerId=localStorage.getItem('unintended-player-id');
+if(!playerId){playerId='web-'+crypto.randomUUID();localStorage.setItem('unintended-player-id',playerId);}
+let counter=0;
+function add(text,kind=''){const row=document.createElement('div');row.className='line '+kind;row.textContent=text||' ';output.appendChild(row);output.scrollTop=output.scrollHeight;}
+function renderState(state){if(!state)return;locationEl.textContent=state.location?.name||'Unknown';exitsEl.replaceChildren();for(const exit of state.exits||[]){const button=document.createElement('button');button.textContent=exit.shape+' '+exit.label;button.title='Go to '+exit.targetName;button.onclick=()=>send('go '+exit.label);exitsEl.appendChild(button);}metaEl.textContent='PLAYER '+playerId.slice(0,18)+'… · SEED '+state.seed;}
+async function send(text){const command=text.trim();if(!command)return;add('> '+command,'input');input.value='';statusEl.textContent='thinking';try{const response=await fetch('/command',{method:'POST',headers:{'content-type':'application/json','x-player-id':playerId},body:JSON.stringify({type:'COMMAND',text:command,requestId:'web-'+(++counter)})});const data=await response.json();for(const line of data.lines||[data.message||'The Server produced no useful sentence.'])add(String(line),response.ok?'':'error');renderState(data.state);statusEl.textContent=response.ok?'connected':'objecting';}catch(error){add('The hosted Server could not be reached. This is inconveniently literal.','error');statusEl.textContent='disconnected';}}
+form.addEventListener('submit',event=>{event.preventDefault();send(input.value);});
+resetEl.addEventListener('click',()=>send('reset'));
+send('look');
+</script>
+</body>
+</html>`, {
+  headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+  },
+});
+
 export class PlayerState {
   constructor(private readonly ctx: { storage: { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> } }) {}
 
@@ -134,6 +188,14 @@ export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
 
+    if (request.method === 'GET' && url.pathname === '/') {
+      return Response.redirect(new URL('/play', url), 302);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/play') {
+      return playPage();
+    }
+
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({
         ok: true,
@@ -141,6 +203,7 @@ export default {
         runtime: 'cloudflare-workers',
         environment: env.DEPLOYMENT_ENV ?? 'unknown',
         playerState: 'durable-object',
+        playable: '/play',
       });
     }
 
@@ -175,14 +238,7 @@ export default {
 
       if (/^(?:look|look around|where am i)$/i.test(command)) {
         const snapshot = worldSnapshot(stored.locationId);
-        return json({
-          ok: true,
-          playerId,
-          requestId,
-          command,
-          lines: lookLines(snapshot),
-          state: snapshot,
-        });
+        return json({ ok: true, playerId, requestId, command, lines: lookLines(snapshot), state: snapshot });
       }
 
       const movement = command.match(/^(?:go|move|walk|travel)(?:\s+(?:to|via))?\s+(.+)$/i);
@@ -213,10 +269,7 @@ export default {
           requestId,
           command,
           moved: true,
-          lines: [
-            `You take ${exit.shape} ${exit.label}.`,
-            ...lookLines(snapshot),
-          ],
+          lines: [`You take ${exit.shape} ${exit.label}.`, ...lookLines(snapshot)],
           state: snapshot,
         });
       }
@@ -235,34 +288,28 @@ export default {
         });
       }
 
-      return json(
-        {
-          ok: false,
-          playerId,
-          requestId,
-          code: 'HOSTED_COMMAND_NOT_ENABLED',
-          message: 'The hosted slice currently supports LOOK, movement, and RESET. The rest of civilisation remains queued.',
-        },
-        { status: 501 },
-      );
+      return json({
+        ok: false,
+        playerId,
+        requestId,
+        code: 'HOSTED_COMMAND_NOT_ENABLED',
+        message: 'The hosted slice currently supports LOOK, movement, and RESET. The rest of civilisation remains queued.',
+      }, { status: 501 });
     }
 
     if (url.pathname === '/ws') {
-      return json(
-        {
-          ok: false,
-          code: 'WEBSOCKET_ADAPTER_NOT_ENABLED',
-          message: 'The Cloudflare transport exists, but multiplayer transport has not been migrated yet.',
-        },
-        { status: 501 },
-      );
+      return json({
+        ok: false,
+        code: 'WEBSOCKET_ADAPTER_NOT_ENABLED',
+        message: 'The Cloudflare transport exists, but multiplayer transport has not been migrated yet.',
+      }, { status: 501 });
     }
 
     return json({
       ok: true,
       service: 'unintended-api',
       runtime: 'cloudflare-workers',
-      note: 'Hosted LOOK and persistent movement are available at /command. Player location is stored in a Durable Object.',
+      note: 'Hosted LOOK and persistent movement are available at /command. Open /play for the browser shell.',
     });
   },
 };
