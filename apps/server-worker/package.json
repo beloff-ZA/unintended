@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "cf:dev": "wrangler dev",
-    "build": "wrangler deploy --dry-run --outdir dist",
+    "build": "pnpm --filter @unintended/shared build && pnpm --filter @unintended/world-data build && wrangler deploy --dry-run --outdir dist --env=\"\"",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit"
   },
