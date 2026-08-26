@@ -49,6 +49,26 @@ export type HostedWorldSnapshot = {
   };
 };
 
+export type HostedWorldEventInput = {
+  type: string;
+  actorId: string;
+  targetId?: string | null;
+  locationId?: string | null;
+  requestId?: string | null;
+  payload?: Record<string, unknown>;
+};
+
+export type HostedWorldEvent = {
+  id: string;
+  type: string;
+  actorId: string;
+  targetId: string | null;
+  locationId: string | null;
+  requestId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
 const withClient = async <T>(binding: HyperdriveBinding, fn: (client: Client) => Promise<T>): Promise<T> => {
   const client = new Client({ connectionString: binding.connectionString });
   try {
@@ -261,6 +281,100 @@ export async function writeHostedPlayerLocation(
     const row = result.rows[0];
     if (!row) throw new Error('HOSTED_PLAYER_IDENTITY_NOT_FOUND');
     return { characterId: row.character_id, locationId: row.location_id };
+  });
+}
+
+const mapWorldEventRow = (row: {
+  id: string;
+  type: string;
+  actor_id: string;
+  target_id: string | null;
+  location_id: string | null;
+  request_id?: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}): HostedWorldEvent => ({
+  id: row.id,
+  type: row.type,
+  actorId: row.actor_id,
+  targetId: row.target_id,
+  locationId: row.location_id,
+  requestId: row.request_id ?? null,
+  payload: row.payload ?? {},
+  createdAt: row.created_at,
+});
+
+export async function appendHostedWorldEvent(
+  binding: HyperdriveBinding,
+  event: HostedWorldEventInput,
+): Promise<HostedWorldEvent> {
+  return withClient(binding, async (client) => {
+    const values = [
+      event.type,
+      event.actorId,
+      event.targetId ?? null,
+      event.locationId ?? null,
+      event.requestId ?? null,
+      event.payload ?? {},
+    ];
+
+    try {
+      const result = await client.query(
+        `insert into world_events (type, actor_id, target_id, location_id, request_id, payload)
+         values ($1, $2, $3, $4, $5, $6::jsonb)
+         on conflict (request_id) where request_id is not null do update
+           set request_id = excluded.request_id
+         returning id, type, actor_id, target_id, location_id, request_id, payload, created_at::text`,
+        values,
+      );
+      return mapWorldEventRow(result.rows[0]);
+    } catch (error) {
+      if (!(typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '42703')) {
+        throw error;
+      }
+
+      const fallback = await client.query(
+        `insert into world_events (type, actor_id, target_id, location_id, payload)
+         values ($1, $2, $3, $4, $5::jsonb)
+         returning id, type, actor_id, target_id, location_id, payload, created_at::text`,
+        [event.type, event.actorId, event.targetId ?? null, event.locationId ?? null, event.payload ?? {}],
+      );
+      return mapWorldEventRow(fallback.rows[0]);
+    }
+  });
+}
+
+export async function readHostedWorldEvents(
+  binding: HyperdriveBinding,
+  actorId: string,
+  limit = 50,
+): Promise<HostedWorldEvent[]> {
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 50));
+  return withClient(binding, async (client) => {
+    try {
+      const result = await client.query(
+        `select id, type, actor_id, target_id, location_id, request_id, payload, created_at::text
+           from world_events
+          where actor_id = $1
+          order by created_at desc
+          limit $2`,
+        [actorId, safeLimit],
+      );
+      return result.rows.map(mapWorldEventRow);
+    } catch (error) {
+      if (!(typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '42703')) {
+        throw error;
+      }
+      const fallback = await client.query(
+        `select id, type, actor_id, target_id, location_id, payload, created_at::text
+           from world_events
+          where actor_id = $1
+          order by created_at desc
+          limit $2`,
+        [actorId, safeLimit],
+      );
+      return fallback.rows.map(mapWorldEventRow);
+    }
   });
 }
 
