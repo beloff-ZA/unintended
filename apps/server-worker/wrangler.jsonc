@@ -11,11 +11,19 @@
       {
         "name": "PLAYER_STATE",
         "class_name": "PlayerState"
+      },
+      {
+        "name": "REGION",
+        "class_name": "Region"
       }
     ]
   },
   "exports": {
     "PlayerState": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "Region": {
       "type": "durable-object",
       "storage": "sqlite"
     }
@@ -31,6 +39,10 @@
           {
             "name": "PLAYER_STATE",
             "class_name": "PlayerState"
+          },
+          {
+            "name": "REGION",
+            "class_name": "Region"
           }
         ]
       }
@@ -45,6 +57,10 @@
           {
             "name": "PLAYER_STATE",
             "class_name": "PlayerState"
+          },
+          {
+            "name": "REGION",
+            "class_name": "Region"
           }
         ]
       }
@@ -59,6 +75,10 @@
           {
             "name": "PLAYER_STATE",
             "class_name": "PlayerState"
+          },
+          {
+            "name": "REGION",
+            "class_name": "Region"
           }
         ]
       }
