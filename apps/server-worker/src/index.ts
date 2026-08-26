@@ -1,5 +1,6 @@
 import { ClientCommand } from '@unintended/shared';
 import { buildWorld, DEFAULT_WORLD_SEED, ITEMS, NPCS } from '@unintended/world-data';
+import { probeDatabase, type HyperdriveBinding } from './db';
 
 declare class WebSocketPair {
   0: WebSocket;
@@ -27,6 +28,7 @@ type DurableObjectBinding = {
 
 type WorkerEnv = {
   DEPLOYMENT_ENV?: string;
+  HYPERDRIVE: HyperdriveBinding;
   PLAYER_STATE: DurableObjectBinding;
   REGION: DurableObjectBinding;
 };
@@ -316,8 +318,30 @@ export default {
         environment: env.DEPLOYMENT_ENV ?? 'unknown',
         playerState: 'durable-object',
         regionTransport: 'durable-object-websocket-hibernation',
+        databaseTransport: 'hyperdrive-postgres',
         playable: '/play',
       });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/db/health') {
+      try {
+        const database = await probeDatabase(env.HYPERDRIVE);
+        return json({
+          ok: true,
+          service: 'unintended-api',
+          transport: 'cloudflare-hyperdrive',
+          ...database,
+        });
+      } catch (error) {
+        console.error('Hyperdrive database probe failed', error);
+        return json({
+          ok: false,
+          service: 'unintended-api',
+          transport: 'cloudflare-hyperdrive',
+          code: 'DATABASE_UNAVAILABLE',
+          message: 'PostgreSQL declined to participate in this particular moment.',
+        }, { status: 503 });
+      }
     }
 
     if (request.method === 'GET' && url.pathname === '/world') {
@@ -426,7 +450,7 @@ export default {
       ok: true,
       service: 'unintended-api',
       runtime: 'cloudflare-workers',
-      note: 'Hosted movement and Region Durable Object WebSockets are active. Open /play in two browser sessions to test live presence.',
+      note: 'Hosted movement, Region Durable Object WebSockets, and Hyperdrive health probing are active.',
     });
   },
 };
