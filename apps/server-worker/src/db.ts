@@ -1,11 +1,10 @@
-import { Client, type PoolClient } from 'pg';
+import { Client } from 'pg';
 
 export type HyperdriveBinding = {
   connectionString: string;
 };
 
 export type DatabaseProbe = {
-  ok: boolean;
   latencyMs: number;
   serverTime?: string;
   database?: string;
@@ -90,7 +89,7 @@ type EntityRow = {
   owner_id: string | null;
 };
 
-type QueryClient = Pick<Client, 'query'> | Pick<PoolClient, 'query'>;
+type QueryClient = Pick<Client, 'query'>;
 
 const withClient = async <T>(binding: HyperdriveBinding, fn: (client: Client) => Promise<T>): Promise<T> => {
   const client = new Client({ connectionString: binding.connectionString });
@@ -224,7 +223,6 @@ export async function probeDatabase(binding: HyperdriveBinding): Promise<Databas
       'select now()::text as server_time, current_database() as database',
     );
     return {
-      ok: true,
       latencyMs: Date.now() - started,
       serverTime: result.rows[0]?.server_time,
       database: result.rows[0]?.database,
