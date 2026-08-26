@@ -3,15 +3,21 @@ import { DEFAULT_WORLD_SEED } from '@unintended/world-data';
 import baseWorker, { PlayerState, Region } from './index';
 import {
   appendHostedWorldEvent,
+  dropHostedItem,
   ensureHostedPlayerState,
   hostedIdentitySchemaAvailable,
   hostedWorldSchemaAvailable,
   isMissingHostedPlayerSchemaError,
+  openHostedItem,
+  readHostedInventory,
   readHostedPlayerState,
   readHostedWorldDirections,
   readHostedWorldEvents,
   readHostedWorldSnapshot,
+  takeHostedItem,
   writeHostedPlayerLocation,
+  type HostedItemMutationResult,
+  type HostedWorldItem,
   type HyperdriveBinding,
 } from './db';
 
@@ -29,6 +35,11 @@ type WorkerEnv = {
 
 type LegacyPlayerState = {
   locationId: string;
+};
+
+type HostedPlayer = {
+  locationId: string;
+  characterId?: string;
 };
 
 const START_LOCATION = 'bellweather-square';
@@ -170,6 +181,7 @@ const enrichHealth = async (request: Request, env: WorkerEnv, adaptedEnv: Worker
     worldState: hostedWorldReady ? 'postgres' : 'world-data-fallback',
     directionState: hostedWorldReady ? 'postgres' : 'world-data-fallback',
     eventState: hostedWorldReady ? 'postgres' : 'unavailable',
+    gameplayState: hostedIdentityReady && hostedWorldReady ? 'postgres-transactional' : 'unavailable',
     playerStateFallback: 'durable-object-shadow',
   }, base.status);
 };
@@ -242,12 +254,30 @@ const lookLines = (snapshot: Awaited<ReturnType<typeof publicSnapshot>>) => {
   ];
 };
 
-const ensurePlayer = async (env: WorkerEnv, adaptedEnv: WorkerEnv, playerId: string) => {
+const inventoryLines = (items: HostedWorldItem[]) => [
+  items.length
+    ? `Carrying: ${items.map((item) => item.name).join(', ')}`
+    : 'You are carrying nothing. Admirably low administrative overhead.',
+];
+
+const mutationFailureLines = (result: HostedItemMutationResult, requested: string) => {
+  switch (result.code) {
+    case 'ITEM_NOT_PORTABLE':
+      return [`${result.item?.name ?? requested} declines to become luggage.`];
+    case 'ITEM_NOT_OPENABLE':
+      return [`${result.item?.name ?? requested} has no meaningful relationship with the concept of opening.`];
+    case 'ITEM_NOT_FOUND':
+    default:
+      return [`No available item answers to “${requested}”.`];
+  }
+};
+
+const ensurePlayer = async (_env: WorkerEnv, adaptedEnv: WorkerEnv, playerId: string): Promise<HostedPlayer> => {
   const response = await adaptedEnv.PLAYER_STATE
     .get(adaptedEnv.PLAYER_STATE.idFromName(playerId))
     .fetch('https://player-state/state');
   if (!response.ok) throw new Error('PLAYER_STATE_READ_FAILED');
-  return response.json() as Promise<{ locationId: string; characterId?: string }>;
+  return response.json() as Promise<HostedPlayer>;
 };
 
 const writePlayerLocation = async (adaptedEnv: WorkerEnv, playerId: string, locationId: string) => {
@@ -259,10 +289,15 @@ const writePlayerLocation = async (adaptedEnv: WorkerEnv, playerId: string, loca
       body: JSON.stringify({ locationId }),
     });
   if (!response.ok) throw new Error('PLAYER_STATE_WRITE_FAILED');
-  return response.json() as Promise<{ locationId: string; characterId?: string }>;
+  return response.json() as Promise<HostedPlayer>;
 };
 
-const actorIdFor = (player: { characterId?: string }, playerId: string) => player.characterId ?? playerId;
+const actorIdFor = (player: HostedPlayer, playerId: string) => player.characterId ?? playerId;
+
+const characterIdFor = (player: HostedPlayer) => {
+  if (!player.characterId) throw new Error('HOSTED_CHARACTER_ID_REQUIRED');
+  return player.characterId;
+};
 
 export { PlayerState, Region };
 
@@ -301,6 +336,18 @@ export default {
       } catch (error) {
         console.error('Postgres event history read failed', error);
         return json({ ok: false, code: 'EVENT_HISTORY_UNAVAILABLE' }, 503);
+      }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/inventory') {
+      try {
+        const playerId = playerIdFor(request, url);
+        const player = await ensurePlayer(env, adaptedEnv, playerId);
+        const inventory = await readHostedInventory(env.HYPERDRIVE, characterIdFor(player));
+        return json({ ok: true, playerId, inventory, lines: inventoryLines(inventory), authority: 'postgres' });
+      } catch (error) {
+        console.error('Postgres inventory read failed', error);
+        return json({ ok: false, code: 'INVENTORY_UNAVAILABLE' }, 503);
       }
     }
 
@@ -350,6 +397,105 @@ export default {
             payload: { command },
           });
           return json({ ok: true, playerId, requestId, command, eventId: event.id, lines: lookLines(snapshot), state: snapshot });
+        }
+
+        if (/^(?:inventory|inv|i)$/i.test(command)) {
+          const inventory = await readHostedInventory(env.HYPERDRIVE, characterIdFor(player));
+          return json({ ok: true, playerId, requestId, command, inventory, lines: inventoryLines(inventory), authority: 'postgres' });
+        }
+
+        const take = command.match(/^(?:take|get|pick up)\s+(.+)$/i);
+        if (take) {
+          const requested = take[1]!.trim();
+          const result = await takeHostedItem(
+            env.HYPERDRIVE,
+            characterIdFor(player),
+            player.locationId,
+            requested,
+            requestId,
+          );
+          if (!result.ok) {
+            return json({ ok: false, playerId, requestId, code: result.code, lines: mutationFailureLines(result, requested) }, 400);
+          }
+          const [inventory, snapshot] = await Promise.all([
+            readHostedInventory(env.HYPERDRIVE, characterIdFor(player)),
+            publicSnapshot(env, player.locationId),
+          ]);
+          return json({
+            ok: true,
+            playerId,
+            requestId,
+            command,
+            eventId: result.event?.id,
+            replayed: result.replayed ?? false,
+            item: result.item,
+            inventory,
+            lines: [`You take ${result.item?.name ?? requested}.`, ...inventoryLines(inventory)],
+            state: snapshot,
+          });
+        }
+
+        const drop = command.match(/^(?:drop|leave)\s+(.+)$/i);
+        if (drop) {
+          const requested = drop[1]!.trim();
+          const result = await dropHostedItem(
+            env.HYPERDRIVE,
+            characterIdFor(player),
+            player.locationId,
+            requested,
+            requestId,
+          );
+          if (!result.ok) {
+            return json({ ok: false, playerId, requestId, code: result.code, lines: mutationFailureLines(result, requested) }, 400);
+          }
+          const [inventory, snapshot] = await Promise.all([
+            readHostedInventory(env.HYPERDRIVE, characterIdFor(player)),
+            publicSnapshot(env, player.locationId),
+          ]);
+          return json({
+            ok: true,
+            playerId,
+            requestId,
+            command,
+            eventId: result.event?.id,
+            replayed: result.replayed ?? false,
+            item: result.item,
+            inventory,
+            lines: [`You drop ${result.item?.name ?? requested}.`, ...inventoryLines(inventory)],
+            state: snapshot,
+          });
+        }
+
+        const open = command.match(/^open\s+(.+)$/i);
+        if (open) {
+          const requested = open[1]!.trim();
+          const result = await openHostedItem(
+            env.HYPERDRIVE,
+            characterIdFor(player),
+            player.locationId,
+            requested,
+            requestId,
+          );
+          if (!result.ok) {
+            return json({ ok: false, playerId, requestId, code: result.code, lines: mutationFailureLines(result, requested) }, 400);
+          }
+          const snapshot = await publicSnapshot(env, player.locationId);
+          const alreadyOpen = result.code === 'ALREADY_OPEN';
+          return json({
+            ok: true,
+            playerId,
+            requestId,
+            command,
+            eventId: result.event?.id,
+            replayed: result.replayed ?? false,
+            item: result.item,
+            lines: [
+              alreadyOpen
+                ? `${result.item?.name ?? requested} is already open. Repetition has not improved it.`
+                : `You open ${result.item?.name ?? requested}.`,
+            ],
+            state: snapshot,
+          });
         }
 
         const movement = command.match(/^(?:go|move|walk|travel)(?:\s+(?:to|via))?\s+(.+)$/i);
@@ -440,7 +586,7 @@ export default {
         playerId,
         requestId,
         code: 'HOSTED_COMMAND_NOT_ENABLED',
-        message: 'The hosted slice currently supports LOOK, movement, RESET, live regional presence, and persistent event history. The rest of civilisation remains queued.',
+        message: 'The hosted slice supports LOOK, movement, TAKE, DROP, OPEN, INVENTORY, RESET, live regional presence, and persistent event history. The remaining civilisation is smaller now.',
       }, 501);
     }
 
