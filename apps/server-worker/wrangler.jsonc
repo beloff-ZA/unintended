@@ -3,9 +3,16 @@
   "name": "unintended-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-19",
+  "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "DEPLOYMENT_ENV": "production"
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "11ee3403e13f4c6ba410220e83e98b9d"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
@@ -34,6 +41,12 @@
       "vars": {
         "DEPLOYMENT_ENV": "local"
       },
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "11ee3403e13f4c6ba410220e83e98b9d"
+        }
+      ],
       "durable_objects": {
         "bindings": [
           {
@@ -52,6 +65,12 @@
       "vars": {
         "DEPLOYMENT_ENV": "preview"
       },
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "11ee3403e13f4c6ba410220e83e98b9d"
+        }
+      ],
       "durable_objects": {
         "bindings": [
           {
@@ -70,6 +89,12 @@
       "vars": {
         "DEPLOYMENT_ENV": "production"
       },
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "11ee3403e13f4c6ba410220e83e98b9d"
+        }
+      ],
       "durable_objects": {
         "bindings": [
           {
