@@ -50,6 +50,23 @@ export async function hostedIdentitySchemaAvailable(binding: HyperdriveBinding):
   });
 }
 
+export async function readHostedPlayerState(
+  binding: HyperdriveBinding,
+  browserPlayerId: string,
+): Promise<HostedPlayerState | null> {
+  return withClient(binding, async (client) => {
+    const result = await client.query<{ character_id: string; location_id: string }>(
+      `select h.character_id, c.location_id
+         from hosted_player_identities h
+         join characters c on c.id = h.character_id
+        where h.browser_player_id = $1`,
+      [browserPlayerId],
+    );
+    const row = result.rows[0];
+    return row ? { characterId: row.character_id, locationId: row.location_id } : null;
+  });
+}
+
 export async function ensureHostedPlayerState(
   binding: HyperdriveBinding,
   browserPlayerId: string,
