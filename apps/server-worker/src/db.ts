@@ -35,6 +35,12 @@ export type HostedWorldItem = {
   name: string;
 };
 
+export type HostedWorldDirection = {
+  key: string;
+  shape: string;
+  label: string;
+};
+
 export type HostedWorldSnapshot = {
   location: HostedWorldLocation;
   nearby: {
@@ -83,10 +89,34 @@ export async function hostedWorldSchemaAvailable(binding: HyperdriveBinding): Pr
       locations: string | null;
       npc_state: string | null;
       entities: string | null;
+      directions: string | null;
     }>(
-      "select to_regclass('public.locations')::text as locations, to_regclass('public.npc_state')::text as npc_state, to_regclass('public.entities')::text as entities",
+      "select to_regclass('public.locations')::text as locations, to_regclass('public.npc_state')::text as npc_state, to_regclass('public.entities')::text as entities, to_regclass('public.world_directions')::text as directions",
     );
-    return Boolean(result.rows[0]?.locations && result.rows[0]?.npc_state && result.rows[0]?.entities);
+    return Boolean(
+      result.rows[0]?.locations &&
+      result.rows[0]?.npc_state &&
+      result.rows[0]?.entities &&
+      result.rows[0]?.directions,
+    );
+  });
+}
+
+export async function readHostedWorldDirections(
+  binding: HyperdriveBinding,
+  keys: string[],
+): Promise<Map<string, HostedWorldDirection>> {
+  if (keys.length === 0) return new Map();
+
+  return withClient(binding, async (client) => {
+    const result = await client.query<HostedWorldDirection>(
+      `select key, shape, label
+         from world_directions
+        where key = any($1::text[])
+        order by key`,
+      [keys],
+    );
+    return new Map(result.rows.map((direction) => [direction.key, direction]));
   });
 }
 

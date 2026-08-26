@@ -1,5 +1,5 @@
 import { ClientCommand } from '@unintended/shared';
-import { buildWorld, DEFAULT_WORLD_SEED } from '@unintended/world-data';
+import { DEFAULT_WORLD_SEED } from '@unintended/world-data';
 import baseWorker, { PlayerState, Region } from './index';
 import {
   ensureHostedPlayerState,
@@ -7,9 +7,9 @@ import {
   hostedWorldSchemaAvailable,
   isMissingHostedPlayerSchemaError,
   readHostedPlayerState,
+  readHostedWorldDirections,
   readHostedWorldSnapshot,
   writeHostedPlayerLocation,
-  type HostedWorldSnapshot,
   type HyperdriveBinding,
 } from './db';
 
@@ -30,9 +30,6 @@ type LegacyPlayerState = {
 };
 
 const START_LOCATION = 'bellweather-square';
-const directionDefinitions = new Map(
-  buildWorld(DEFAULT_WORLD_SEED).directions.map((direction) => [direction.key, direction]),
-);
 
 const legacyStub = (env: WorkerEnv, playerId: string) =>
   env.PLAYER_STATE.get(env.PLAYER_STATE.idFromName(playerId));
@@ -169,6 +166,7 @@ const enrichHealth = async (request: Request, env: WorkerEnv, adaptedEnv: Worker
     hostedWorldReady,
     playerState: hostedIdentityReady ? 'postgres' : 'durable-object-fallback',
     worldState: hostedWorldReady ? 'postgres' : 'world-data-fallback',
+    directionState: hostedWorldReady ? 'postgres' : 'world-data-fallback',
     playerStateFallback: 'durable-object-shadow',
   }, base.status);
 };
@@ -182,9 +180,11 @@ const publicSnapshot = async (env: WorkerEnv, locationId: string) => {
   const stored = await readHostedWorldSnapshot(env.HYPERDRIVE, locationId);
   if (!stored) return null;
 
-  const targets = await Promise.all(
-    Object.values(stored.location.exits).map((targetId) => readHostedWorldSnapshot(env.HYPERDRIVE, targetId)),
-  );
+  const exitEntries = Object.entries(stored.location.exits);
+  const [targets, directions] = await Promise.all([
+    Promise.all(exitEntries.map(([, targetId]) => readHostedWorldSnapshot(env.HYPERDRIVE, targetId))),
+    readHostedWorldDirections(env.HYPERDRIVE, exitEntries.map(([key]) => key)),
+  ]);
   const names = new Map(targets.filter(Boolean).map((entry) => [entry!.location.id, entry!.location.name]));
 
   return {
@@ -195,8 +195,8 @@ const publicSnapshot = async (env: WorkerEnv, locationId: string) => {
       x: stored.location.x,
       y: stored.location.y,
     },
-    exits: Object.entries(stored.location.exits).map(([key, targetId]) => {
-      const direction = directionDefinitions.get(key);
+    exits: exitEntries.map(([key, targetId]) => {
+      const direction = directions.get(key);
       return {
         key,
         label: direction?.label ?? key,
@@ -207,6 +207,7 @@ const publicSnapshot = async (env: WorkerEnv, locationId: string) => {
     }),
     nearby: stored.nearby,
     authority: 'postgres',
+    directionAuthority: 'postgres',
   };
 };
 
