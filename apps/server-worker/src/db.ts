@@ -16,6 +16,33 @@ export type HostedPlayerState = {
   locationId: string;
 };
 
+export type HostedWorldLocation = {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  exits: Record<string, string>;
+};
+
+export type HostedWorldNpc = {
+  id: string;
+  name: string;
+  job: string;
+};
+
+export type HostedWorldItem = {
+  id: string;
+  name: string;
+};
+
+export type HostedWorldSnapshot = {
+  location: HostedWorldLocation;
+  nearby: {
+    npcs: HostedWorldNpc[];
+    items: HostedWorldItem[];
+  };
+};
+
 const withClient = async <T>(binding: HyperdriveBinding, fn: (client: Client) => Promise<T>): Promise<T> => {
   const client = new Client({ connectionString: binding.connectionString });
   try {
@@ -50,6 +77,75 @@ export async function hostedIdentitySchemaAvailable(binding: HyperdriveBinding):
   });
 }
 
+export async function hostedWorldSchemaAvailable(binding: HyperdriveBinding): Promise<boolean> {
+  return withClient(binding, async (client) => {
+    const result = await client.query<{
+      locations: string | null;
+      npc_state: string | null;
+      entities: string | null;
+    }>(
+      "select to_regclass('public.locations')::text as locations, to_regclass('public.npc_state')::text as npc_state, to_regclass('public.entities')::text as entities",
+    );
+    return Boolean(result.rows[0]?.locations && result.rows[0]?.npc_state && result.rows[0]?.entities);
+  });
+}
+
+export async function readHostedWorldSnapshot(
+  binding: HyperdriveBinding,
+  locationId: string,
+): Promise<HostedWorldSnapshot | null> {
+  return withClient(binding, async (client) => {
+    const locationResult = await client.query<{
+      id: string;
+      name: string;
+      x: number;
+      y: number;
+      exits: Record<string, string>;
+    }>(
+      `select id, name, x, y, exits
+         from locations
+        where id = $1`,
+      [locationId],
+    );
+
+    const location = locationResult.rows[0];
+    if (!location) return null;
+
+    const [npcResult, itemResult] = await Promise.all([
+      client.query<{ id: string; name: string; job: string }>(
+        `select id, name, job
+           from npc_state
+          where location_id = $1
+          order by id`,
+        [locationId],
+      ),
+      client.query<{ id: string; name: string }>(
+        `select id, name
+           from entities
+          where location_id = $1
+            and owner_id is null
+            and kind = 'item'
+          order by id`,
+        [locationId],
+      ),
+    ]);
+
+    return {
+      location: {
+        id: location.id,
+        name: location.name,
+        x: Number(location.x),
+        y: Number(location.y),
+        exits: location.exits ?? {},
+      },
+      nearby: {
+        npcs: npcResult.rows,
+        items: itemResult.rows,
+      },
+    };
+  });
+}
+
 export async function readHostedPlayerState(
   binding: HyperdriveBinding,
   browserPlayerId: string,
@@ -75,8 +171,6 @@ export async function ensureHostedPlayerState(
   return withClient(binding, async (client) => {
     await client.query('begin');
     try {
-      // Serialise first-seen creation for this browser identity. Hash collisions only
-      // serialise unrelated first joins; they do not merge identities.
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [browserPlayerId]);
 
       const existing = await client.query<{ character_id: string; location_id: string }>(
