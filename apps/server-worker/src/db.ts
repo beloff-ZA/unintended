@@ -1,4 +1,4 @@
-import { Client } from 'pg';
+import { Client, type PoolClient } from 'pg';
 
 export type HyperdriveBinding = {
   connectionString: string;
@@ -33,6 +33,9 @@ export type HostedWorldNpc = {
 export type HostedWorldItem = {
   id: string;
   name: string;
+  portable: boolean;
+  openable: boolean;
+  open: boolean;
 };
 
 export type HostedWorldDirection = {
@@ -69,6 +72,26 @@ export type HostedWorldEvent = {
   createdAt: string;
 };
 
+export type HostedItemMutationResult = {
+  ok: boolean;
+  code: 'OK' | 'ITEM_NOT_FOUND' | 'ITEM_NOT_PORTABLE' | 'ITEM_NOT_OPENABLE' | 'ALREADY_OPEN';
+  item?: HostedWorldItem;
+  event?: HostedWorldEvent;
+  replayed?: boolean;
+};
+
+type EntityRow = {
+  id: string;
+  name: string;
+  portable: boolean;
+  openable: boolean;
+  open: boolean;
+  location_id: string | null;
+  owner_id: string | null;
+};
+
+type QueryClient = Pick<Client, 'query'> | Pick<PoolClient, 'query'>;
+
 const withClient = async <T>(binding: HyperdriveBinding, fn: (client: Client) => Promise<T>): Promise<T> => {
   const client = new Client({ connectionString: binding.connectionString });
   try {
@@ -77,6 +100,121 @@ const withClient = async <T>(binding: HyperdriveBinding, fn: (client: Client) =>
   } finally {
     await client.end().catch(() => undefined);
   }
+};
+
+const withTransaction = async <T>(binding: HyperdriveBinding, fn: (client: Client) => Promise<T>): Promise<T> =>
+  withClient(binding, async (client) => {
+    await client.query('begin');
+    try {
+      const result = await fn(client);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined);
+      throw error;
+    }
+  });
+
+const mapItemRow = (row: Pick<EntityRow, 'id' | 'name' | 'portable' | 'openable' | 'open'>): HostedWorldItem => ({
+  id: row.id,
+  name: row.name,
+  portable: row.portable,
+  openable: row.openable,
+  open: row.open,
+});
+
+const mapWorldEventRow = (row: {
+  id: string;
+  type: string;
+  actor_id: string;
+  target_id: string | null;
+  location_id: string | null;
+  request_id?: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}): HostedWorldEvent => ({
+  id: row.id,
+  type: row.type,
+  actorId: row.actor_id,
+  targetId: row.target_id,
+  locationId: row.location_id,
+  requestId: row.request_id ?? null,
+  payload: row.payload ?? {},
+  createdAt: row.created_at,
+});
+
+const requestIdColumnAvailable = async (client: QueryClient): Promise<boolean> => {
+  const result = await client.query<{ available: boolean }>(
+    `select exists (
+       select 1
+         from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'world_events'
+          and column_name = 'request_id'
+     ) as available`,
+  );
+  return Boolean(result.rows[0]?.available);
+};
+
+const readEventByRequestId = async (
+  client: QueryClient,
+  requestId: string | null | undefined,
+  supportsRequestId: boolean,
+): Promise<HostedWorldEvent | null> => {
+  if (!supportsRequestId || !requestId) return null;
+  const result = await client.query(
+    `select id, type, actor_id, target_id, location_id, request_id, payload, created_at::text
+       from world_events
+      where request_id = $1
+      limit 1`,
+    [requestId],
+  );
+  return result.rows[0] ? mapWorldEventRow(result.rows[0]) : null;
+};
+
+const insertWorldEvent = async (
+  client: QueryClient,
+  event: HostedWorldEventInput,
+  supportsRequestId: boolean,
+): Promise<HostedWorldEvent> => {
+  if (supportsRequestId) {
+    const result = await client.query(
+      `insert into world_events (type, actor_id, target_id, location_id, request_id, payload)
+       values ($1, $2, $3, $4, $5, $6::jsonb)
+       on conflict (request_id) where request_id is not null do update
+         set request_id = excluded.request_id
+       returning id, type, actor_id, target_id, location_id, request_id, payload, created_at::text`,
+      [
+        event.type,
+        event.actorId,
+        event.targetId ?? null,
+        event.locationId ?? null,
+        event.requestId ?? null,
+        event.payload ?? {},
+      ],
+    );
+    return mapWorldEventRow(result.rows[0]);
+  }
+
+  const result = await client.query(
+    `insert into world_events (type, actor_id, target_id, location_id, payload)
+     values ($1, $2, $3, $4, $5::jsonb)
+     returning id, type, actor_id, target_id, location_id, payload, created_at::text`,
+    [event.type, event.actorId, event.targetId ?? null, event.locationId ?? null, event.payload ?? {}],
+  );
+  return mapWorldEventRow(result.rows[0]);
+};
+
+const itemForEvent = async (client: QueryClient, event: HostedWorldEvent): Promise<HostedWorldItem | undefined> => {
+  if (!event.targetId) return undefined;
+  const result = await client.query<EntityRow>(
+    `select id, name, portable, openable, open, location_id, owner_id
+       from entities
+      where id = $1
+        and kind = 'item'`,
+    [event.targetId],
+  );
+  return result.rows[0] ? mapItemRow(result.rows[0]) : undefined;
 };
 
 export async function probeDatabase(binding: HyperdriveBinding): Promise<DatabaseProbe> {
@@ -169,8 +307,8 @@ export async function readHostedWorldSnapshot(
           order by id`,
         [locationId],
       ),
-      client.query<{ id: string; name: string }>(
-        `select id, name
+      client.query<EntityRow>(
+        `select id, name, portable, openable, open, location_id, owner_id
            from entities
           where location_id = $1
             and owner_id is null
@@ -190,9 +328,26 @@ export async function readHostedWorldSnapshot(
       },
       nearby: {
         npcs: npcResult.rows,
-        items: itemResult.rows,
+        items: itemResult.rows.map(mapItemRow),
       },
     };
+  });
+}
+
+export async function readHostedInventory(
+  binding: HyperdriveBinding,
+  actorId: string,
+): Promise<HostedWorldItem[]> {
+  return withClient(binding, async (client) => {
+    const result = await client.query<EntityRow>(
+      `select id, name, portable, openable, open, location_id, owner_id
+         from entities
+        where owner_id = $1
+          and kind = 'item'
+        order by name, id`,
+      [actorId],
+    );
+    return result.rows.map(mapItemRow);
   });
 }
 
@@ -218,48 +373,40 @@ export async function ensureHostedPlayerState(
   browserPlayerId: string,
   initialLocationId: string,
 ): Promise<HostedPlayerState> {
-  return withClient(binding, async (client) => {
-    await client.query('begin');
-    try {
-      await client.query('select pg_advisory_xact_lock(hashtext($1))', [browserPlayerId]);
+  return withTransaction(binding, async (client) => {
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [browserPlayerId]);
 
-      const existing = await client.query<{ character_id: string; location_id: string }>(
-        `select h.character_id, c.location_id
-           from hosted_player_identities h
-           join characters c on c.id = h.character_id
-          where h.browser_player_id = $1`,
-        [browserPlayerId],
-      );
+    const existing = await client.query<{ character_id: string; location_id: string }>(
+      `select h.character_id, c.location_id
+         from hosted_player_identities h
+         join characters c on c.id = h.character_id
+        where h.browser_player_id = $1`,
+      [browserPlayerId],
+    );
 
-      if (existing.rows[0]) {
-        await client.query('commit');
-        return {
-          characterId: existing.rows[0].character_id,
-          locationId: existing.rows[0].location_id,
-        };
-      }
-
-      const character = await client.query<{ id: string; location_id: string }>(
-        `insert into characters (name, location_id)
-         values ($1, $2)
-         returning id, location_id`,
-        ['Unidentified Participant', initialLocationId],
-      );
-      const created = character.rows[0];
-      if (!created) throw new Error('HOSTED_CHARACTER_CREATE_RETURNED_NO_ROW');
-
-      await client.query(
-        `insert into hosted_player_identities (browser_player_id, character_id)
-         values ($1, $2)`,
-        [browserPlayerId, created.id],
-      );
-
-      await client.query('commit');
-      return { characterId: created.id, locationId: created.location_id };
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined);
-      throw error;
+    if (existing.rows[0]) {
+      return {
+        characterId: existing.rows[0].character_id,
+        locationId: existing.rows[0].location_id,
+      };
     }
+
+    const character = await client.query<{ id: string; location_id: string }>(
+      `insert into characters (name, location_id)
+       values ($1, $2)
+       returning id, location_id`,
+      ['Unidentified Participant', initialLocationId],
+    );
+    const created = character.rows[0];
+    if (!created) throw new Error('HOSTED_CHARACTER_CREATE_RETURNED_NO_ROW');
+
+    await client.query(
+      `insert into hosted_player_identities (browser_player_id, character_id)
+       values ($1, $2)`,
+      [browserPlayerId, created.id],
+    );
+
+    return { characterId: created.id, locationId: created.location_id };
   });
 }
 
@@ -284,63 +431,13 @@ export async function writeHostedPlayerLocation(
   });
 }
 
-const mapWorldEventRow = (row: {
-  id: string;
-  type: string;
-  actor_id: string;
-  target_id: string | null;
-  location_id: string | null;
-  request_id?: string | null;
-  payload: Record<string, unknown>;
-  created_at: string;
-}): HostedWorldEvent => ({
-  id: row.id,
-  type: row.type,
-  actorId: row.actor_id,
-  targetId: row.target_id,
-  locationId: row.location_id,
-  requestId: row.request_id ?? null,
-  payload: row.payload ?? {},
-  createdAt: row.created_at,
-});
-
 export async function appendHostedWorldEvent(
   binding: HyperdriveBinding,
   event: HostedWorldEventInput,
 ): Promise<HostedWorldEvent> {
   return withClient(binding, async (client) => {
-    const values = [
-      event.type,
-      event.actorId,
-      event.targetId ?? null,
-      event.locationId ?? null,
-      event.requestId ?? null,
-      event.payload ?? {},
-    ];
-
-    try {
-      const result = await client.query(
-        `insert into world_events (type, actor_id, target_id, location_id, request_id, payload)
-         values ($1, $2, $3, $4, $5, $6::jsonb)
-         on conflict (request_id) where request_id is not null do update
-           set request_id = excluded.request_id
-         returning id, type, actor_id, target_id, location_id, request_id, payload, created_at::text`,
-        values,
-      );
-      return mapWorldEventRow(result.rows[0]);
-    } catch (error) {
-      if (!(typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '42703')) {
-        throw error;
-      }
-
-      const fallback = await client.query(
-        `insert into world_events (type, actor_id, target_id, location_id, payload)
-         values ($1, $2, $3, $4, $5::jsonb)
-         returning id, type, actor_id, target_id, location_id, payload, created_at::text`,
-        [event.type, event.actorId, event.targetId ?? null, event.locationId ?? null, event.payload ?? {}],
-      );
-      return mapWorldEventRow(fallback.rows[0]);
-    }
+    const supportsRequestId = await requestIdColumnAvailable(client);
+    return insertWorldEvent(client, event, supportsRequestId);
   });
 }
 
@@ -351,30 +448,178 @@ export async function readHostedWorldEvents(
 ): Promise<HostedWorldEvent[]> {
   const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 50));
   return withClient(binding, async (client) => {
-    try {
-      const result = await client.query(
-        `select id, type, actor_id, target_id, location_id, request_id, payload, created_at::text
-           from world_events
-          where actor_id = $1
-          order by created_at desc
-          limit $2`,
-        [actorId, safeLimit],
-      );
-      return result.rows.map(mapWorldEventRow);
-    } catch (error) {
-      if (!(typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '42703')) {
-        throw error;
-      }
-      const fallback = await client.query(
-        `select id, type, actor_id, target_id, location_id, payload, created_at::text
-           from world_events
-          where actor_id = $1
-          order by created_at desc
-          limit $2`,
-        [actorId, safeLimit],
-      );
-      return fallback.rows.map(mapWorldEventRow);
+    const supportsRequestId = await requestIdColumnAvailable(client);
+    const result = supportsRequestId
+      ? await client.query(
+          `select id, type, actor_id, target_id, location_id, request_id, payload, created_at::text
+             from world_events
+            where actor_id = $1
+            order by created_at desc
+            limit $2`,
+          [actorId, safeLimit],
+        )
+      : await client.query(
+          `select id, type, actor_id, target_id, location_id, payload, created_at::text
+             from world_events
+            where actor_id = $1
+            order by created_at desc
+            limit $2`,
+          [actorId, safeLimit],
+        );
+    return result.rows.map(mapWorldEventRow);
+  });
+}
+
+export async function takeHostedItem(
+  binding: HyperdriveBinding,
+  actorId: string,
+  locationId: string,
+  requested: string,
+  requestId?: string | null,
+): Promise<HostedItemMutationResult> {
+  return withTransaction(binding, async (client) => {
+    const supportsRequestId = await requestIdColumnAvailable(client);
+    const replay = await readEventByRequestId(client, requestId, supportsRequestId);
+    if (replay) {
+      return { ok: true, code: 'OK', item: await itemForEvent(client, replay), event: replay, replayed: true };
     }
+
+    const result = await client.query<EntityRow>(
+      `select id, name, portable, openable, open, location_id, owner_id
+         from entities
+        where kind = 'item'
+          and owner_id is null
+          and location_id = $1
+          and (id = $2 or lower(name) = lower($2))
+        order by case when id = $2 then 0 else 1 end, id
+        limit 1
+        for update`,
+      [locationId, requested],
+    );
+    const row = result.rows[0];
+    if (!row) return { ok: false, code: 'ITEM_NOT_FOUND' };
+    if (!row.portable) return { ok: false, code: 'ITEM_NOT_PORTABLE', item: mapItemRow(row) };
+
+    const updated = await client.query<EntityRow>(
+      `update entities
+          set owner_id = $1,
+              location_id = null,
+              updated_at = now()
+        where id = $2
+      returning id, name, portable, openable, open, location_id, owner_id`,
+      [actorId, row.id],
+    );
+    const item = mapItemRow(updated.rows[0]);
+    const event = await insertWorldEvent(client, {
+      type: 'ITEM_TAKEN',
+      actorId,
+      targetId: row.id,
+      locationId,
+      requestId,
+      payload: { itemName: row.name, fromLocationId: locationId },
+    }, supportsRequestId);
+    return { ok: true, code: 'OK', item, event };
+  });
+}
+
+export async function dropHostedItem(
+  binding: HyperdriveBinding,
+  actorId: string,
+  locationId: string,
+  requested: string,
+  requestId?: string | null,
+): Promise<HostedItemMutationResult> {
+  return withTransaction(binding, async (client) => {
+    const supportsRequestId = await requestIdColumnAvailable(client);
+    const replay = await readEventByRequestId(client, requestId, supportsRequestId);
+    if (replay) {
+      return { ok: true, code: 'OK', item: await itemForEvent(client, replay), event: replay, replayed: true };
+    }
+
+    const result = await client.query<EntityRow>(
+      `select id, name, portable, openable, open, location_id, owner_id
+         from entities
+        where kind = 'item'
+          and owner_id = $1
+          and (id = $2 or lower(name) = lower($2))
+        order by case when id = $2 then 0 else 1 end, id
+        limit 1
+        for update`,
+      [actorId, requested],
+    );
+    const row = result.rows[0];
+    if (!row) return { ok: false, code: 'ITEM_NOT_FOUND' };
+
+    const updated = await client.query<EntityRow>(
+      `update entities
+          set owner_id = null,
+              location_id = $1,
+              updated_at = now()
+        where id = $2
+      returning id, name, portable, openable, open, location_id, owner_id`,
+      [locationId, row.id],
+    );
+    const item = mapItemRow(updated.rows[0]);
+    const event = await insertWorldEvent(client, {
+      type: 'ITEM_DROPPED',
+      actorId,
+      targetId: row.id,
+      locationId,
+      requestId,
+      payload: { itemName: row.name, toLocationId: locationId },
+    }, supportsRequestId);
+    return { ok: true, code: 'OK', item, event };
+  });
+}
+
+export async function openHostedItem(
+  binding: HyperdriveBinding,
+  actorId: string,
+  locationId: string,
+  requested: string,
+  requestId?: string | null,
+): Promise<HostedItemMutationResult> {
+  return withTransaction(binding, async (client) => {
+    const supportsRequestId = await requestIdColumnAvailable(client);
+    const replay = await readEventByRequestId(client, requestId, supportsRequestId);
+    if (replay) {
+      return { ok: true, code: 'OK', item: await itemForEvent(client, replay), event: replay, replayed: true };
+    }
+
+    const result = await client.query<EntityRow>(
+      `select id, name, portable, openable, open, location_id, owner_id
+         from entities
+        where kind = 'item'
+          and (owner_id = $1 or (owner_id is null and location_id = $2))
+          and (id = $3 or lower(name) = lower($3))
+        order by case when id = $3 then 0 else 1 end, id
+        limit 1
+        for update`,
+      [actorId, locationId, requested],
+    );
+    const row = result.rows[0];
+    if (!row) return { ok: false, code: 'ITEM_NOT_FOUND' };
+    if (!row.openable) return { ok: false, code: 'ITEM_NOT_OPENABLE', item: mapItemRow(row) };
+    if (row.open) return { ok: true, code: 'ALREADY_OPEN', item: mapItemRow(row) };
+
+    const updated = await client.query<EntityRow>(
+      `update entities
+          set open = true,
+              updated_at = now()
+        where id = $1
+      returning id, name, portable, openable, open, location_id, owner_id`,
+      [row.id],
+    );
+    const item = mapItemRow(updated.rows[0]);
+    const event = await insertWorldEvent(client, {
+      type: 'ITEM_OPENED',
+      actorId,
+      targetId: row.id,
+      locationId,
+      requestId,
+      payload: { itemName: row.name, owned: row.owner_id === actorId },
+    }, supportsRequestId);
+    return { ok: true, code: 'OK', item, event };
   });
 }
 
