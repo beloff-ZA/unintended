@@ -2,12 +2,14 @@ import { ClientCommand } from '@unintended/shared';
 import { DEFAULT_WORLD_SEED } from '@unintended/world-data';
 import baseWorker, { PlayerState, Region } from './index';
 import {
+  appendHostedWorldEvent,
   ensureHostedPlayerState,
   hostedIdentitySchemaAvailable,
   hostedWorldSchemaAvailable,
   isMissingHostedPlayerSchemaError,
   readHostedPlayerState,
   readHostedWorldDirections,
+  readHostedWorldEvents,
   readHostedWorldSnapshot,
   writeHostedPlayerLocation,
   type HyperdriveBinding,
@@ -167,6 +169,7 @@ const enrichHealth = async (request: Request, env: WorkerEnv, adaptedEnv: Worker
     playerState: hostedIdentityReady ? 'postgres' : 'durable-object-fallback',
     worldState: hostedWorldReady ? 'postgres' : 'world-data-fallback',
     directionState: hostedWorldReady ? 'postgres' : 'world-data-fallback',
+    eventState: hostedWorldReady ? 'postgres' : 'unavailable',
     playerStateFallback: 'durable-object-shadow',
   }, base.status);
 };
@@ -256,7 +259,10 @@ const writePlayerLocation = async (adaptedEnv: WorkerEnv, playerId: string, loca
       body: JSON.stringify({ locationId }),
     });
   if (!response.ok) throw new Error('PLAYER_STATE_WRITE_FAILED');
+  return response.json() as Promise<{ locationId: string; characterId?: string }>;
 };
+
+const actorIdFor = (player: { characterId?: string }, playerId: string) => player.characterId ?? playerId;
 
 export { PlayerState, Region };
 
@@ -282,6 +288,19 @@ export default {
       } catch (error) {
         console.error('Postgres world read failed', error);
         return baseWorker.fetch(request, adaptedEnv);
+      }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/events') {
+      try {
+        const playerId = playerIdFor(request, url);
+        const player = await ensurePlayer(env, adaptedEnv, playerId);
+        const limit = Number(url.searchParams.get('limit') ?? 50);
+        const events = await readHostedWorldEvents(env.HYPERDRIVE, actorIdFor(player, playerId), limit);
+        return json({ ok: true, playerId, events, authority: 'postgres' });
+      } catch (error) {
+        console.error('Postgres event history read failed', error);
+        return json({ ok: false, code: 'EVENT_HISTORY_UNAVAILABLE' }, 503);
       }
     }
 
@@ -318,11 +337,19 @@ export default {
 
       try {
         const player = await ensurePlayer(env, adaptedEnv, playerId);
+        const actorId = actorIdFor(player, playerId);
 
         if (/^(?:look|look around|where am i)$/i.test(command)) {
           const snapshot = await publicSnapshot(env, player.locationId);
           if (!snapshot) return json({ ok: false, code: 'WORLD_LOCATION_NOT_FOUND' }, 500);
-          return json({ ok: true, playerId, requestId, command, lines: lookLines(snapshot), state: snapshot });
+          const event = await appendHostedWorldEvent(env.HYPERDRIVE, {
+            type: 'PLAYER_LOOKED',
+            actorId,
+            locationId: player.locationId,
+            requestId,
+            payload: { command },
+          });
+          return json({ ok: true, playerId, requestId, command, eventId: event.id, lines: lookLines(snapshot), state: snapshot });
         }
 
         const movement = command.match(/^(?:go|move|walk|travel)(?:\s+(?:to|via))?\s+(.+)$/i);
@@ -345,14 +372,30 @@ export default {
             }, 400);
           }
 
-          await writePlayerLocation(adaptedEnv, playerId, resolved.exit.targetId);
+          const fromLocationId = player.locationId;
+          const updatedPlayer = await writePlayerLocation(adaptedEnv, playerId, resolved.exit.targetId);
           const snapshot = await publicSnapshot(env, resolved.exit.targetId);
           if (!snapshot) return json({ ok: false, code: 'WORLD_LOCATION_NOT_FOUND' }, 500);
+          const event = await appendHostedWorldEvent(env.HYPERDRIVE, {
+            type: 'PLAYER_MOVED',
+            actorId: actorIdFor(updatedPlayer, playerId),
+            targetId: resolved.exit.targetId,
+            locationId: resolved.exit.targetId,
+            requestId,
+            payload: {
+              command,
+              fromLocationId,
+              toLocationId: resolved.exit.targetId,
+              directionKey: resolved.exit.key,
+              directionLabel: resolved.exit.label,
+            },
+          });
           return json({
             ok: true,
             playerId,
             requestId,
             command,
+            eventId: event.id,
             moved: true,
             lines: [`You take ${resolved.exit.shape} ${resolved.exit.label}.`, ...lookLines(snapshot)],
             state: snapshot,
@@ -360,14 +403,24 @@ export default {
         }
 
         if (/^(?:reset|reset location|return to start)$/i.test(command)) {
-          await writePlayerLocation(adaptedEnv, playerId, START_LOCATION);
+          const fromLocationId = player.locationId;
+          const updatedPlayer = await writePlayerLocation(adaptedEnv, playerId, START_LOCATION);
           const snapshot = await publicSnapshot(env, START_LOCATION);
           if (!snapshot) return json({ ok: false, code: 'WORLD_LOCATION_NOT_FOUND' }, 500);
+          const event = await appendHostedWorldEvent(env.HYPERDRIVE, {
+            type: 'PLAYER_MOVED',
+            actorId: actorIdFor(updatedPlayer, playerId),
+            targetId: START_LOCATION,
+            locationId: START_LOCATION,
+            requestId,
+            payload: { command, fromLocationId, toLocationId: START_LOCATION, reset: true },
+          });
           return json({
             ok: true,
             playerId,
             requestId,
             command,
+            eventId: event.id,
             reset: true,
             lines: ['The Server returns you to Bellweather Square with all the ceremony of correcting a spreadsheet.', ...lookLines(snapshot)],
             state: snapshot,
@@ -387,7 +440,7 @@ export default {
         playerId,
         requestId,
         code: 'HOSTED_COMMAND_NOT_ENABLED',
-        message: 'The hosted slice currently supports LOOK, movement, RESET, and live regional presence. The rest of civilisation remains queued.',
+        message: 'The hosted slice currently supports LOOK, movement, RESET, live regional presence, and persistent event history. The rest of civilisation remains queued.',
       }, 501);
     }
 
